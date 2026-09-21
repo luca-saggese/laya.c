@@ -1,0 +1,184 @@
+{
+  "dataset": {
+    "name": "laya-insurance-auto-it-synthetic-v1",
+    "schema_id": "claims-auto-it-v1",
+    "language": "it",
+    "locale": "it-IT",
+    "jurisdiction": "Italia",
+    "product": "assicurazione auto RCA / garanzie accessorie",
+    "seed": 42017,
+    "count": 1000,
+    "splits": {
+      "train": 0.82,
+      "validation": 0.13,
+      "demo": 0.05
+    },
+    "stratify_on": "claim_type",
+    "include_questions_in_records": true,
+    "keep_generation_facts": true
+  },
+  "openrouter": {
+    "api_url": "https://openrouter.ai/api/v1/chat/completions",
+    "timeout_seconds": 180,
+    "max_http_retries": 6,
+    "retry_base_seconds": 2.0,
+    "http_referer": "",
+    "x_title": "Laya Synthetic Claims Generator",
+    "structured_output_fallback": true
+  },
+  "models": {
+    "planner": {
+      "model": "openai/gpt-5.4",
+      "temperature": 0.8,
+      "max_tokens": 3500,
+      "extra": {}
+    },
+    "writer": {
+      "model": "~anthropic/claude-sonnet-latest",
+      "temperature": 1.0,
+      "max_tokens": 3000,
+      "extra": {}
+    },
+    "critic": {
+      "model": "~google/gemini-pro-latest",
+      "temperature": 0.15,
+      "max_tokens": 2500,
+      "extra": {}
+    }
+  },
+  "generation": {
+    "workers": 3,
+    "max_plan_attempts": 3,
+    "max_writer_repairs": 2,
+    "min_realism_score": 85,
+    "min_label_alignment_score": 95,
+    "min_information_fidelity_score": 95,
+    "min_style_quality_score": 80,
+    "reject_label_leakage": true,
+    "near_duplicate_hamming_distance": 6,
+    "replacement_rounds": 8,
+    "request_jitter_seconds": [
+      0.0,
+      0.35
+    ]
+  },
+  "controls": {
+    "claim_type": {
+      "collision": 0.22,
+      "parking_damage": 0.14,
+      "theft": 0.08,
+      "attempted_theft": 0.06,
+      "weather": 0.1,
+      "vandalism": 0.08,
+      "glass": 0.1,
+      "animal_collision": 0.05,
+      "fire": 0.04,
+      "road_hazard": 0.06,
+      "other": 0.07
+    },
+    "difficulty": {
+      "easy": 0.25,
+      "medium": 0.45,
+      "hard": 0.25,
+      "borderline": 0.05
+    },
+    "channel": {
+      "web_form": 0.3,
+      "email": 0.2,
+      "call_center_transcript": 0.2,
+      "mobile_app": 0.15,
+      "agent_note": 0.1,
+      "chat": 0.05
+    },
+    "style": {
+      "clear_formal": 0.15,
+      "normal_customer": 0.3,
+      "colloquial": 0.15,
+      "telegraphic": 0.1,
+      "noisy_typos": 0.1,
+      "long_with_distractors": 0.1,
+      "indirect_implicit": 0.1
+    }
+  },
+  "target_distributions": {
+    "urgency": {
+      "0": 0.66,
+      "1": 0.27,
+      "2": 0.07
+    },
+    "injury_reported": {
+      "false": 0.88,
+      "true": 0.12
+    },
+    "third_party_involved": {
+      "false": 0.46,
+      "true": 0.54
+    },
+    "vehicle_drivable": {
+      "false": 0.24,
+      "true": 0.76
+    },
+    "documents_complete": {
+      "0": 0.13,
+      "1": 0.44,
+      "2": 0.43
+    },
+    "needs_human_review": {
+      "false": 0.77,
+      "true": 0.23
+    }
+  },
+  "questions": {
+    "claim_type": {
+      "type": "choice",
+      "instructions": "Classifica la tipologia principale del sinistro descritto.",
+      "criteria": {
+        "collision": "collisione o urto mentre il veicolo era in movimento",
+        "parking_damage": "veicolo trovato danneggiato mentre era parcheggiato o in sosta",
+        "theft": "furto riuscito del veicolo o di componenti rilevanti",
+        "attempted_theft": "tentativo di furto non riuscito con eventuali danni",
+        "weather": "danno causato principalmente da grandine, vento, allagamento o altro evento atmosferico",
+        "vandalism": "danno intenzionale provocato da terzi senza finalità di furto",
+        "glass": "rottura o danneggiamento di parabrezza, lunotto o altri cristalli come evento principale",
+        "animal_collision": "urto con animale come causa principale",
+        "fire": "incendio o principio d'incendio come causa principale",
+        "road_hazard": "danno causato principalmente da buca, detrito, ostacolo o dissesto stradale",
+        "other": "evento non riconducibile in modo affidabile alle categorie precedenti"
+      }
+    },
+    "urgency": {
+      "type": "score",
+      "instructions": "Valuta la priorità operativa del caso.",
+      "criteria": [
+        "gestione ordinaria",
+        "gestione prioritaria a breve",
+        "attenzione umana immediata"
+      ]
+    },
+    "injury_reported": {
+      "type": "noul",
+      "instructions": "Nel sinistro vengono riportate lesioni o possibili lesioni a persone?"
+    },
+    "third_party_involved": {
+      "type": "noul",
+      "instructions": "È coinvolto almeno un terzo identificato o chiaramente presente nella dinamica?"
+    },
+    "vehicle_drivable": {
+      "type": "noul",
+      "instructions": "Il veicolo assicurato risulta utilizzabile e in grado di marciare?"
+    },
+    "documents_complete": {
+      "type": "score",
+      "instructions": "Quanto è completa la documentazione per avviare la gestione ordinaria?",
+      "criteria": [
+        "insufficiente",
+        "parziale",
+        "sufficiente"
+      ]
+    },
+    "needs_human_review": {
+      "type": "noul",
+      "instructions": "Il caso richiede revisione umana per ambiguità, contraddizioni, severità o eccezioni?"
+    }
+  }
+}
