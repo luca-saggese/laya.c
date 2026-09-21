@@ -223,6 +223,49 @@ void laya_attn_mask(void *mask_dev, int seq, int window, int sliding) {
     laya_attn_mask_kernel<<<grd, blk>>>((uint16_t *)mask_dev, seq, window, sliding);
 }
 
+/* Batched variant: `batch` independent items flattened to rows = batch*seq.
+ * The mask is stored as `batch` contiguous [seq,seq] blocks so that a
+ * per-item attention call can take (mask + b*seq*seq), which is exactly the
+ * slice layout laya_attn_scores_ws_kernel expects. Cross-item attention is
+ * always masked, giving the block-diagonal structure the oracle's
+ * [B,1,L,L] mask has.
+ *
+ * `valid` is a device uint8 [batch*seq] flag (1 = real token, NULL = all
+ * real). A padded key column is masked for every query, which is what
+ * src_key_padding_mask / attention_mask does in torch. */
+__global__ void laya_attn_mask_batch_kernel(uint16_t *__restrict__ mask,
+                                            const uint8_t *__restrict__ valid,
+                                            int batch, int seq,
+                                            int window, int sliding) {
+    size_t idx = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    size_t total = (size_t)batch * (size_t)seq * (size_t)seq;
+    if (idx >= total) return;
+    int key = (int)(idx % (size_t)seq);
+    int query = (int)((idx / (size_t)seq) % (size_t)seq);
+    int b = (int)(idx / ((size_t)seq * (size_t)seq));
+    int keep = valid ? valid[(size_t)b * seq + key] != 0 : 1;
+    if (sliding) {
+        int d = key - query;
+        if (d < 0) d = -d;
+        keep = keep && (d <= window);
+    }
+    mask[idx] = keep ? 0x0000u : LAYA_BF16_MIN_BITS;
+}
+
+void laya_attn_mask_batch(void *mask_dev, const void *valid_dev, int batch,
+                          int seq, int window, int sliding) {
+    if (!mask_dev || batch <= 0 || seq <= 0) {
+        snprintf(laya_cuda_errbuf(), 512, "attn_mask_batch: bad args");
+        return;
+    }
+    size_t total = (size_t)batch * (size_t)seq * (size_t)seq;
+    int block = 256;
+    size_t grid = (total + block - 1) / block;
+    laya_attn_mask_batch_kernel<<<(unsigned)grid, block>>>(
+        (uint16_t *)mask_dev, (const uint8_t *)valid_dev, batch, seq, window,
+        sliding);
+}
+
 /* ------------------------------------------------------------------ */
 /* Gather selected sequence positions: out[i] = h[idx[i]]              */
 /* ------------------------------------------------------------------ */
