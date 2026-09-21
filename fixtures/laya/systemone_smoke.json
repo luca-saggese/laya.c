@@ -1,0 +1,53 @@
+{
+ "name": "jev-systemone-smoke",
+ "model": "laya-local",
+ "state": "Claim CLM-2291 filed by Maria Rossi on 2026-02-04 for a rear bumper repair. The customer reports that the repair shop billed 1,480 EUR while the approved estimate was 900 EUR. No police report was filed and no injuries were reported.",
+ "questions": {
+  "coverage_choice": {
+   "type": "choice",
+   "instructions": "Decide whether this claim should be approved or denied.",
+   "criteria": {
+    "approve": "the damage is covered by the policy",
+    "deny": "the damage is excluded by the policy"
+   }
+  },
+  "handling_team": {
+   "type": "choice",
+   "instructions": "Pick the team that should own this claim.",
+   "criteria": {
+    "auto_body": "physical damage to the vehicle",
+    "fraud_unit": "suspicious or inflated claim values",
+    "support": "general policy questions"
+   }
+  },
+  "severity": {
+   "type": "score",
+   "instructions": "Rate the claim severity from 0 to 4.",
+   "criteria": [
+    "negligible",
+    "low",
+    "moderate",
+    "high",
+    "catastrophic"
+   ]
+  },
+  "deductible_bucket": {
+   "type": "score",
+   "instructions": "Estimate the deductible bucket.",
+   "criteria": [
+    "none",
+    "small",
+    "medium",
+    "large"
+   ]
+  },
+  "litigation_risk": {
+   "type": "noul",
+   "instructions": "Should a legal notification be required?"
+  },
+  "customer_reply_needed": {
+   "type": "noul",
+   "instructions": "Is a reply to the customer required before closing?"
+  }
+ }
+}
