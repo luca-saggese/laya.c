@@ -1,0 +1,72 @@
+[
+  {
+    "name": "choice-3",
+    "state": "Ticket #4821: the customer reports that the invoice PDF is blank when opened in Chrome. The attachment is 0 bytes.",
+    "questions": {
+      "department": {
+        "type": "choice",
+        "instructions": "Pick the team that should own this ticket.",
+        "criteria": {
+          "billing": "money, invoices, refunds",
+          "engineering": "bugs in the product",
+          "support": "how-to questions"
+        }
+      }
+    }
+  },
+  {
+    "name": "score-5",
+    "state": {"subject": "Refund request", "body": "I was charged twice for the same order.", "customer_tier": "gold"},
+    "questions": {
+      "urgency": {
+        "type": "score",
+        "instructions": "How urgent is this ticket?",
+        "criteria": ["no impact", "minor", "moderate", "serious", "critical"]
+      }
+    }
+  },
+  {
+    "name": "noul",
+    "state": "The user asks: is it possible to export a report as CSV from the dashboard?",
+    "questions": {
+      "unsafe": {
+        "type": "noul",
+        "instructions": "Does this request ask for something that is not allowed?"
+      }
+    }
+  },
+  {
+    "name": "multi-question",
+    "state": [
+      {"role": "user", "content": "Can I get an invoice with my company VAT number?"},
+      {"role": "agent", "content": "Sure, I can add the VAT number to the invoice."}
+    ],
+    "questions": {
+      "topic": {
+        "type": "choice",
+        "instructions": "What is the user asking about?",
+        "criteria": {"billing": "invoices and payments", "shipping": "delivery", "account": "login and profile"}
+      },
+      "satisfied": {
+        "type": "noul",
+        "instructions": "Is the user satisfied with the answer?"
+      },
+      "complexity": {
+        "type": "score",
+        "instructions": "How complex is the request?",
+        "criteria": ["trivial", "easy", "medium", "hard"]
+      }
+    }
+  },
+  {
+    "name": "unicode",
+    "state": "客户说发票上的金额不正确：应付款是 1.234,56 € 而不是 1.334,56 €。 Réclamation ouverte depuis 3 jours.",
+    "questions": {
+      "language": {
+        "type": "choice",
+        "instructions": "Which language is the customer writing in?",
+        "criteria": {"english": "english", "chinese": "中文", "french": "français"}
+      }
+    }
+  }
+]
