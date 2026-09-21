@@ -1,0 +1,115 @@
+#ifndef LAYA_MODERNBERT_H
+#define LAYA_MODERNBERT_H
+
+/*
+ * ModernBERT encoder forward path for Laya.
+ *
+ * This is a direct, model-specific port of the original
+ * `answerdotai/ModernBERT-large` encoder as instantiated by
+ * `_reference/laya/laya/common.py`. It deliberately mirrors the torch
+ * module structure instead of introducing a graph executor:
+ *
+ *   embeddings: norm(tok_embeddings(ids))
+ *   layer:      h += attn(attn_norm(h))
+ *               h += mlp(mlp_norm(h))
+ *   final:      final_norm(h)
+ *
+ * All GEMM / RoPE / norm / activation work is delegated to the primitives
+ * copied from o1.c; this file only sequences them and owns the workspace.
+ */
+
+#include <stdint.h>
+
+#include "model.h"
+
+/*
+ * Persistent scratch for the encoder forward pass. Everything is allocated
+ * once by laya_encoder_init and reused for every request, so the steady-state
+ * forward contains no cudaMalloc/cudaFree (the o1.c residency policy).
+ *
+ * Layout notes:
+ *  - `h` is the sequence-major activation [seq, hidden].
+ *  - qkv holds the fused projection [seq, 3*hidden]; it is also reused for
+ *    the Wi output [seq, 2*intermediate].
+ *  - q/k/v are head-major [heads, seq, head_dim] because that is what the
+ *    attention primitive consumes.
+ */
+typedef struct {
+    int seq;                 /* capacity in tokens */
+    int hidden;
+    int n_heads;
+    int head_dim;
+    int intermediate;
+
+    void *h;                 /* [seq, hidden] bf16 */
+    void *res;               /* [seq, hidden] bf16 */
+    void *norm;              /* [seq, hidden] bf16 */
+    void *qkv;               /* scratch [seq, max(3*hidden, 2*inter)] bf16 */
+    int64_t scratch_bytes;   /* capacity of the qkv/Wi scratch slot */
+    void *q;                 /* [n_heads, seq, head_dim] bf16 */
+    void *k;
+    void *v;
+    void *attn_out;          /* [n_heads, seq, head_dim] -> merged */
+    void *q_rot;             /* rotation output, separate from q/k    */
+    void *k_rot;             /*   because the rope kernel is not safe
+                              *   to run in place (it reads the pair) */
+    void *attn_ctx;          /* [seq, hidden] bf16 (Wo output) */
+    void *mlp_gate;          /* [seq, intermediate] bf16 */
+    void *mlp_up;            /* [seq, intermediate] bf16 */
+    void *mlp_act;           /* [seq, intermediate] bf16 */
+    void *mlp_out;           /* [seq, hidden] bf16 */
+    void *rope_cos;          /* [seq, head_dim] f32, global theta */
+    void *rope_sin;
+    void *rope_cos2;         /* [seq, head_dim] f32, sliding theta */
+    void *rope_sin2;
+    void *mask_full;         /* [1,1,seq,seq] bf16, all-zero */
+    void *mask_sliding;      /* [1,1,seq,seq] bf16 window */
+    void *scores;            /* attention scratch */
+    void *probs;
+
+    /* optional parity taps (allocated only when requested) */
+    void *dump_emb;          /* [seq, hidden] after the embedding stage */
+    void *dump_l0;           /* [seq, hidden] after layer 0 (global)     */
+    void *dump_l1;           /* [seq, hidden] after layer 1 (sliding)    */
+
+    int64_t bytes;
+} laya_encoder_ws;
+
+typedef struct {
+    laya_encoder_ws ws;
+    int initialized;
+    unsigned dump_mask;      /* LAYA_DUMP_* taps, set before init */
+} laya_encoder;
+
+/* Validates that every tensor the forward dereferences exists with the exact
+ * shape ModernBERT needs, so a layout bug fails the load, not the answer. */
+laya_status laya_encoder_check_weights(const laya_model *m);
+
+/* Human-readable reason for the last failing encoder call. */
+const char *laya_encoder_last_error(void);
+
+/* Parity taps: ask the encoder to keep a copy of the embedding stage and/or
+ * the output of layer 0 / layer 1, so a single forward can be diffed against
+ * the Python oracle's hook dump. Call before the first forward. */
+enum {
+    LAYA_DUMP_EMBEDDINGS = 1 << 0,
+    LAYA_DUMP_LAYER0     = 1 << 1,
+    LAYA_DUMP_LAYER1     = 1 << 2,
+};
+void laya_encoder_set_dump(laya_encoder *enc, unsigned mask);
+
+/* Allocates the workspace for the given sequence capacity. Idempotent: a
+ * second call with the same (or smaller) seq is a no-op. */
+laya_status laya_encoder_init(laya_encoder *enc, const laya_model *m, int seq);
+
+void laya_encoder_free(laya_encoder *enc);
+
+/*
+ * Runs the encoder on a token batch already resident on the device.
+ * `ids_dev` is int32 [seq], `out_dev` receives bf16 [seq, hidden].
+ * The caller owns out_dev (it is the same buffer handed to the decision head).
+ */
+laya_status laya_encoder_forward(laya_encoder *enc, const laya_model *m,
+                                 const void *ids_dev, int seq, void *out_dev);
+
+#endif /* LAYA_MODERNBERT_H */

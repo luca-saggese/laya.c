@@ -128,7 +128,10 @@ laya_status laya_encoder_init(laya_encoder *enc, const laya_model *m, int seq) {
     size_t S = (size_t)seq;
 
     size_t bf = S * (size_t)d * 2;                /* one [S,d] bf16 activation   */
-    size_t qkv = S * (size_t)(3 * d) * 2;         /* [S,3d]                      */
+    /* Fused Wqkv writes [S,3d] and the MLP Wi output writes [S,2*inter] into
+     * the same reused scratch slot, so the slot must be sized for the larger
+     * of the two widths. 2*inter exceeds 3*d on this model. */
+    size_t scratch = S * (size_t)(3 * d > 2 * inter ? 3 * d : 2 * inter) * 2;
     size_t hmaj = (size_t)H * S * (size_t)hd * 2; /* one [H,S,hd] buffer         */
     size_t mlp = S * (size_t)inter * 2;           /* one [S,I] buffer            */
     size_t mask = S * S * 2;
@@ -141,7 +144,7 @@ laya_status laya_encoder_init(laya_encoder *enc, const laya_model *m, int seq) {
 
     size_t total = 0;
     total += bf * 4;                /* h, res, norm, attn_ctx  */
-    total += qkv;                   /* qkv (also reused by Wi) */
+    total += scratch;               /* qkv / Wi scratch slot */
     total += hmaj * 6;              /* q, k, v, attn_out, q_rot, k_rot */
     total += mlp * 3 + bf;          /* gate, up, act, mlp_out  */
     total += rope * 4;              /* cos/sin per layer type  */
@@ -171,7 +174,8 @@ laya_status laya_encoder_init(laya_encoder *enc, const laya_model *m, int seq) {
     ws->res = p;          p += bf;
     ws->norm = p;         p += bf;
     ws->attn_ctx = p;     p += bf;
-    ws->qkv = p;          p += qkv;
+    ws->qkv = p;          p += scratch;
+    ws->scratch_bytes = (int64_t)scratch;
     ws->q = p;            p += hmaj;
     ws->k = p;            p += hmaj;
     ws->v = p;            p += hmaj;
@@ -193,6 +197,45 @@ laya_status laya_encoder_init(laya_encoder *enc, const laya_model *m, int seq) {
     if (enc->dump_mask & LAYA_DUMP_EMBEDDINGS) { ws->dump_emb = p; p += bf; }
     if (enc->dump_mask & LAYA_DUMP_LAYER0)     { ws->dump_l0 = p;  p += bf; }
     if (enc->dump_mask & LAYA_DUMP_LAYER1)     { ws->dump_l1 = p;  p += bf; }
+
+    /* One-time allocation audit: every reusable slot, in allocation order,
+     * with the capacity the layout actually reserved for it. */
+    if (getenv("LAYA_DEBUG_PROBE")) {
+        struct { const char *n; const void *p; size_t req; } tab[] = {
+            {"h",         ws->h,        bf},
+            {"res",       ws->res,      bf},
+            {"norm",      ws->norm,     bf},
+            {"attn_ctx",  ws->attn_ctx, bf},
+            {"scratch",   ws->qkv,      scratch},
+            {"q",         ws->q,        hmaj},
+            {"k",         ws->k,        hmaj},
+            {"v",         ws->v,        hmaj},
+            {"attn_out",  ws->attn_out, hmaj},
+            {"q_rot",     ws->q_rot,    hmaj},
+            {"k_rot",     ws->k_rot,    hmaj},
+            {"mlp_gate",  ws->mlp_gate, mlp},
+            {"mlp_up",    ws->mlp_up,   mlp},
+            {"mlp_act",   ws->mlp_act,  mlp},
+            {"mlp_out",   ws->mlp_out,  bf},
+            {"rope_cos",  ws->rope_cos, rope},
+            {"rope_sin",  ws->rope_sin, rope},
+            {"rope_cos2", ws->rope_cos2,rope},
+            {"rope_sin2", ws->rope_sin2,rope},
+            {"mask_full", ws->mask_full, mask},
+            {"mask_slid", ws->mask_sliding, mask},
+            {"scores",    ws->scores,   f32scores},
+            {"probs",     ws->probs,    (size_t)H * S * S * 2},
+        };
+        const size_t ntab = sizeof(tab) / sizeof(tab[0]);
+        fprintf(stderr, "%-10s %10s %10s  %s\n", "buffer", "capacity", "required", "status");
+        for (size_t k = 0; k < ntab; k++) {
+            size_t cap = (k + 1 < ntab)
+                             ? (size_t)((const uint8_t *)tab[k + 1].p - (const uint8_t *)tab[k].p)
+                             : (size_t)((const uint8_t *)base + total - (const uint8_t *)tab[k].p);
+            fprintf(stderr, "%-10s %10zu %10zu  %s\n", tab[k].n, cap, tab[k].req,
+                    tab[k].req <= cap ? "OK" : "OVERFLOW");
+        }
+    }
 
     /* Full-attention layers get no mask at all from the oracle
      * (create_bidirectional_mask returns None for a single unpadded item), but
@@ -244,6 +287,20 @@ static laya_status linear(const laya_tensor *w, const void *x, void *y,
     return LAYA_OK;
 }
 
+static void dump_dev(const char *fmt, const void *dev, size_t nbytes) {
+    const char *dbg = getenv("LAYA_DEBUG_PROBE");
+    if (!dbg || !dbg[0]) return;
+    cudaDeviceSynchronize();
+    uint8_t *host = malloc(nbytes);
+    if (!host) return;
+    if (cudaMemcpy(host, dev, nbytes, cudaMemcpyDeviceToHost) != cudaSuccess) { free(host); return; }
+    char path[512];
+    snprintf(path, sizeof(path), fmt, dbg);
+    FILE *f = fopen(path, "wb");
+    if (f) { fwrite(host, 1, nbytes, f); fclose(f); }
+    free(host);
+}
+
 laya_status laya_encoder_forward(laya_encoder *enc, const laya_model *m,
                                  const void *ids_dev, int seq, void *out_dev) {
     laya_status st = laya_encoder_init(enc, m, seq);
@@ -277,7 +334,42 @@ laya_status laya_encoder_forward(laya_encoder *enc, const laya_model *m,
         }
 
         if ((st = linear(&lw->Wqkv, attn_in, ws->qkv, S, 3 * d, d)) != LAYA_OK) return st;
+        {
+            const char *dbg = getenv("LAYA_DEBUG_PROBE");
+            if (i == 0 && dbg && dbg[0]) {
+                cudaDeviceSynchronize();
+                size_t nf = (size_t)S * 3 * d * 2;
+                uint16_t *host = malloc(nf);
+                if (host) {
+                    char path[512];
+                    cudaMemcpy(host, ws->qkv, nf, cudaMemcpyDeviceToHost);
+                    snprintf(path, sizeof(path), "%s.fused", dbg);
+                    FILE *f = fopen(path, "wb");
+                    if (f) { fwrite(host, 1, nf, f); fclose(f); }
+                    free(host);
+                }
+            }
+        }
         laya_qkv_split(ws->qkv, ws->q, ws->k, ws->v, S, H, hd);
+        {
+            const char *dbg = getenv("LAYA_DEBUG_PROBE");
+            if (i == 0 && dbg && dbg[0]) {
+                cudaDeviceSynchronize();
+                size_t nb = (size_t)S * H * hd * 2;
+                uint16_t *host = malloc(nb);
+                if (host) {
+                    const void *src[3] = { ws->q, ws->k, ws->v };
+                    char path[512];
+                    for (int j = 0; j < 3; j++) {
+                        cudaMemcpy(host, src[j], nb, cudaMemcpyDeviceToHost);
+                        snprintf(path, sizeof(path), "%s.qkv%c", dbg, "qkv"[j]);
+                        FILE *f = fopen(path, "wb");
+                        if (f) { fwrite(host, 1, nb, f); fclose(f); }
+                    }
+                    free(host);
+                }
+            }
+        }
 
         /* torch: (q.float()*cos) + (rotate_half(q.float())*sin), cast once.
          * The fp32 variant is exactly that; the bf16 variant would round every
@@ -285,24 +377,126 @@ laya_status laya_encoder_forward(laya_encoder *enc, const laya_model *m,
          * are mandatory: the kernel reads the paired half of each element. */
         laya_apply_rotary_f32(ws->q, cos, sin, ws->q_rot, H, S, hd);
         laya_apply_rotary_f32(ws->k, cos, sin, ws->k_rot, H, S, hd);
+        {
+            const char *dbg = getenv("LAYA_DEBUG_PROBE");
+            if (i == 0 && dbg && dbg[0]) {
+                cudaDeviceSynchronize();
+                size_t nb = (size_t)S * H * hd * 2;
+                uint16_t *host = malloc(nb);
+                if (host) {
+                    const void *src[2] = { ws->q_rot, ws->k_rot };
+                    char path[512];
+                    for (int j = 0; j < 2; j++) {
+                        cudaMemcpy(host, src[j], nb, cudaMemcpyDeviceToHost);
+                        snprintf(path, sizeof(path), "%s.rope%c", dbg, "qk"[j]);
+                        FILE *f = fopen(path, "wb");
+                        if (f) { fwrite(host, 1, nb, f); fclose(f); }
+                    }
+                    snprintf(path, sizeof(path), "%s.cos", dbg);
+                    FILE *f = fopen(path, "wb");
+                    if (f) {
+                        float *cf = malloc((size_t)S * hd * 4), *sf = malloc((size_t)S * hd * 4);
+                        if (cf && sf) {
+                            cudaMemcpy(cf, cos, (size_t)S * hd * 4, cudaMemcpyDeviceToHost);
+                            cudaMemcpy(sf, sin, (size_t)S * hd * 4, cudaMemcpyDeviceToHost);
+                            fwrite(cf, 4, (size_t)S * hd, f);
+                            fwrite(sf, 4, (size_t)S * hd, f);
+                        }
+                        free(cf); free(sf);
+                        fclose(f);
+                    }
+                    free(host);
+                }
+            }
+        }
 
         const void *mask = is_global ? ws->mask_full : ws->mask_sliding;
         laya_attention_ws(ws->q_rot, ws->k_rot, ws->v, mask, (float *)ws->scores,
                           ws->probs, ws->attn_out, H, S, hd, scale);
+        {
+            const char *dbg = getenv("LAYA_DEBUG_PROBE");
+            if (i == 0 && dbg && dbg[0]) {
+                cudaDeviceSynchronize();
+                size_t nb = (size_t)S * H * hd * 2;
+                size_t npb = (size_t)S * H * S * 2;
+                uint16_t *host = malloc(npb > nb ? npb : nb);
+                if (host) {
+                    char path[512];
+                    cudaMemcpy(host, ws->attn_out, nb, cudaMemcpyDeviceToHost);
+                    snprintf(path, sizeof(path), "%s.attnout", dbg);
+                    FILE *f = fopen(path, "wb");
+                    if (f) { fwrite(host, 1, nb, f); fclose(f); }
+                    cudaMemcpy(host, ws->probs, (size_t)S * H * S * 2, cudaMemcpyDeviceToHost);
+                    snprintf(path, sizeof(path), "%s.probstmp", dbg);
+                    f = fopen(path, "wb");
+                    if (f) { fwrite(host, 1, npb, f); fclose(f); }
+                    free(host);
+                }
+            }
+        }
 
         /* attn_out is [H,S,hd]; torch does transpose(1,2).reshape(S, H*hd). */
         laya_head_merge(ws->attn_out, ws->norm, S, H, hd);
+        {
+            const char *dbg = getenv("LAYA_DEBUG_PROBE");
+            if (i == 0 && dbg && dbg[0]) {
+                cudaDeviceSynchronize();
+                size_t nb = (size_t)S * d * 2;
+                uint16_t *host = malloc(nb);
+                if (host) {
+                    char path[512];
+                    cudaMemcpy(host, ws->norm, nb, cudaMemcpyDeviceToHost);
+                    snprintf(path, sizeof(path), "%s.merged", dbg);
+                    FILE *f = fopen(path, "wb");
+                    if (f) { fwrite(host, 1, nb, f); fclose(f); }
+                    free(host);
+                }
+            }
+        }
         if ((st = linear(&lw->Wo, ws->norm, ws->attn_ctx, S, d, d)) != LAYA_OK) return st;
+        {
+            const char *dbg = getenv("LAYA_DEBUG_PROBE");
+            if (i == 0 && dbg && dbg[0]) {
+                cudaDeviceSynchronize();
+                size_t nb = (size_t)S * d * 2;
+                uint16_t *host = malloc(nb);
+                if (host) {
+                    char path[512];
+                    cudaMemcpy(host, ws->attn_ctx, nb, cudaMemcpyDeviceToHost);
+                    snprintf(path, sizeof(path), "%s.attnctx", dbg);
+                    FILE *f = fopen(path, "wb");
+                    if (f) { fwrite(host, 1, nb, f); fclose(f); }
+                    free(host);
+                }
+            }
+        }
         laya_residual_add(ws->h, ws->attn_ctx, ws->h, (size_t)S * d);
+        if (i == 0) dump_dev("%s.l0.attnres", ws->h, (size_t)S * d * 2);
 
         /* ---------------- mlp (GeGLU) ---------------- */
+        if (i == 0) dump_dev("%s.l0.mlpnorm_w", lw->mlp_norm.ptr, (size_t)d * 2);
+        if (i == 0) dump_dev("%s.l0.h_in_mlpnorm", ws->h, (size_t)S * d * 2);
         laya_layernorm(ws->h, lw->mlp_norm.ptr, NULL, ws->norm, S, d, c->layer_norm_eps);
+        if (i == 0) dump_dev("%s.l0.mlpnorm", ws->norm, (size_t)S * d * 2);
+        /* Wi writes [S, 2*inter] into the reused scratch that also backs the
+         * [S, 3*d] qkv output; the arena slot is sized for the larger of the
+         * two, so this is guaranteed in-bounds. */
+        size_t wi_bytes = S * (size_t)(2 * inter) * 2;
+        if (wi_bytes > (size_t)ws->scratch_bytes)
+            return enc_fail(LAYA_ERR_RUNTIME,
+                            "Wi scratch overflow: need %zu have %lld", wi_bytes,
+                            (long long)ws->scratch_bytes);
         if ((st = linear(&lw->Wi, ws->norm, ws->qkv, S, 2 * inter, d)) != LAYA_OK) return st;
+        if (i == 0) dump_dev("%s.l0.wi", ws->qkv, (size_t)S * 2 * inter * 2);
         /* torch: input, gate = Wi(h).chunk(2, -1); Wo(act(input) * gate). */
         laya_glu_split(ws->qkv, ws->mlp_gate, ws->mlp_up, S, inter);
+        if (i == 0) dump_dev("%s.l0.glu_in", ws->mlp_gate, (size_t)S * inter * 2);
+        if (i == 0) dump_dev("%s.l0.glu_gate", ws->mlp_up, (size_t)S * inter * 2);
         laya_geglu(ws->mlp_gate, ws->mlp_up, ws->mlp_act, (size_t)S * inter);
+        if (i == 0) dump_dev("%s.l0.geglu", ws->mlp_act, (size_t)S * inter * 2);
         if ((st = linear(&lw->mlp_Wo, ws->mlp_act, ws->mlp_out, S, d, inter)) != LAYA_OK)
             return st;
+        if (i == 0) dump_dev("%s.l0.mlpout", ws->mlp_out, (size_t)S * d * 2);
         laya_residual_add(ws->h, ws->mlp_out, ws->h, (size_t)S * d);
 
         if (i == 0 && ws->dump_l0)
