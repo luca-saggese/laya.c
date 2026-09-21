@@ -12,6 +12,7 @@
 #include "laya.h"
 #include "model.h"
 #include "laya_tokenizer.h"
+#include "laya_sequence.h"
 #include "laya_timing.h"
 
 static void usage(const char *argv0) {
@@ -22,6 +23,7 @@ static void usage(const char *argv0) {
     printf("  --inspect               load the model, print the resident summary, exit\n");
     printf("  --tokenize TEXT         encode TEXT and print the token ids\n");
     printf("  --tokenize-file PATH    encode every JSON string in PATH's \"texts\" array\n");
+    printf("  --sequence-file PATH    build sequences for every question in PATH\n");
     printf("  --timing                print the timing report on exit\n");
     printf("  -h, --help              show this help\n");
 }
@@ -44,6 +46,7 @@ static int tokenize_text(const char *text) {
 int main(int argc, char **argv) {
     const char *model_path = NULL;
     const char *tokenize_file = NULL;
+    const char *sequence_file = NULL;
     const char *tokenize_text_arg = NULL;
     int device_id = 0;
     int inspect = 0;
@@ -60,6 +63,8 @@ int main(int argc, char **argv) {
             tokenize_text_arg = argv[++i];
         } else if (strcmp(argv[i], "--tokenize-file") == 0 && i + 1 < argc) {
             tokenize_file = argv[++i];
+        } else if (strcmp(argv[i], "--sequence-file") == 0 && i + 1 < argc) {
+            sequence_file = argv[++i];
         } else if (strcmp(argv[i], "--timing") == 0) {
             timing = 1;
         } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
@@ -74,6 +79,7 @@ int main(int argc, char **argv) {
 
     if (tokenize_text_arg) return tokenize_text(tokenize_text_arg);
     if (tokenize_file) return tokenize_fixture(tokenize_file);
+    if (sequence_file) return build_sequence_fixture(sequence_file);
 
     if (!model_path) {
         fprintf(stderr, "%s: --model is required\n", argv[0]);
