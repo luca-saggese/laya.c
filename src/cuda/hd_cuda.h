@@ -42,7 +42,7 @@ void hd_f32_buf_to_bf16(const float *src, void *dst, size_t n);
 /* Error reporting                                                     */
 /* ------------------------------------------------------------------ */
 
-const char *hd_cuda_last_error(void);
+const char *laya_cuda_last_error(void);
 void hd_cuda_clear_error(void);
 
 /* ------------------------------------------------------------------ */

@@ -155,15 +155,6 @@ static laya_status bind_tensor(const laya_gguf_file *gf, const void *arena,
     return LAYA_OK;
 }
 
-static laya_status bind_tensor_opt(const laya_gguf_file *gf, const void *arena,
-                                   const char *name, laya_tensor *out) {
-    const laya_gguf_tensor *t = find_tensor(gf, name);
-    if (!t) {
-        memset(out, 0, sizeof(*out));
-        return LAYA_OK;
-    }
-    return bind_tensor(gf, arena, name, out);
-}
 
 /* ------------------------------------------------------------------ */
 /* Resident load (copied from o1.c hd_weights_to_device_gguf)          */
@@ -196,7 +187,7 @@ static laya_status upload_payload(const char *gguf_path, const laya_gguf_file *g
     cudaError_t e;
 
     for (int i = 0; i < LAYA_LOADER_STAGE_SLOTS; i++) {
-        e = cudaMallocHost(&stage[i], LAYA_LOADER_STAGE_BYTES);
+        e = cudaMallocHost((void **)&stage[i], LAYA_LOADER_STAGE_BYTES);
         if (e != cudaSuccess) {
             set_err("cudaMallocHost stage %d: %s", i, cudaGetErrorString(e));
             st = LAYA_ERR_OOM;

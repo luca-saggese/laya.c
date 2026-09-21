@@ -1,2 +1,5 @@
 /_reference/
 /models/*.gguf
+/build/
+*.o
+*.d
