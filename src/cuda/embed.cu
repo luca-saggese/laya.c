@@ -41,6 +41,38 @@ void laya_gather_rows(const void *table_dev, const void *idx_dev, void *out_dev,
         (uint16_t *)out_dev, M, cols, nrows);
 }
 
+/* fp32 embedding lookup: the oracle's nn.Embedding is not lowered to bf16, so
+ * the table is stored fp32 in the GGUF and read straight into the fp32
+ * residual stream. */
+__global__ void laya_gather_rows_f32_kernel(
+        const float *__restrict__ table,    /* [rows, cols] fp32        */
+        const int64_t *__restrict__ idx,    /* [M] int64 token ids      */
+        float *__restrict__ out,            /* [M, cols] fp32           */
+        int M, int cols, int64_t nrows) {
+    int row = blockIdx.x * blockDim.x + threadIdx.x;
+    if (row >= M) return;
+    int64_t id = idx[row];
+    if (id < 0 || id >= nrows) id = 0;
+    const float *src = table + id * cols;
+    float *dst = out + row * cols;
+    for (int c = threadIdx.y; c < cols; c += blockDim.y) {
+        dst[c] = src[c];
+    }
+}
+
+void laya_gather_rows_f32(const void *table_dev, const void *idx_dev, void *out_dev,
+                          int M, int cols, int64_t nrows) {
+    if (!table_dev || !idx_dev || !out_dev || M <= 0 || cols <= 0) {
+        snprintf(laya_cuda_errbuf(), 512, "gather_rows_f32: bad args");
+        return;
+    }
+    dim3 block(64, 8);
+    dim3 grid((M + block.x - 1) / block.x);
+    laya_gather_rows_f32_kernel<<<grid, block>>>(
+        (const float *)table_dev, (const int64_t *)idx_dev,
+        (float *)out_dev, M, cols, nrows);
+}
+
 __global__ void laya_tms_condition_kernel(
         const int64_t *__restrict__ idx,  /* [M] token ids            */
         const uint16_t *__restrict__ emb, /* [M, H] bf16 text emb     */

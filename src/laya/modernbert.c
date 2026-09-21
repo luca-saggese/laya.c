@@ -139,7 +139,7 @@ laya_status laya_encoder_init(laya_encoder *enc, const laya_model *m, int seq) {
     size_t f32scores = (size_t)H * S * S * 4;
 
     size_t dump = 0;
-    for (unsigned b = 0; b < 3; b++)
+    for (unsigned b = 0; b < 5; b++)
         if (enc->dump_mask & (1u << b)) dump += bf;
 
     size_t total = 0;
@@ -197,6 +197,8 @@ laya_status laya_encoder_init(laya_encoder *enc, const laya_model *m, int seq) {
     if (enc->dump_mask & LAYA_DUMP_EMBEDDINGS) { ws->dump_emb = p; p += bf; }
     if (enc->dump_mask & LAYA_DUMP_LAYER0)     { ws->dump_l0 = p;  p += bf; }
     if (enc->dump_mask & LAYA_DUMP_LAYER1)     { ws->dump_l1 = p;  p += bf; }
+    if (enc->dump_mask & LAYA_DUMP_LAYER15)    { ws->dump_l15 = p; p += bf; }
+    if (enc->dump_mask & LAYA_DUMP_LAYER27)    { ws->dump_l27 = p; p += bf; }
 
     /* One-time allocation audit: every reusable slot, in allocation order,
      * with the capacity the layout actually reserved for it. */
@@ -504,6 +506,12 @@ laya_status laya_encoder_forward(laya_encoder *enc, const laya_model *m,
                             cudaMemcpyDeviceToDevice, 0);
         if (i == 1 && ws->dump_l1)
             cudaMemcpyAsync(ws->dump_l1, ws->h, (size_t)S * d * 2,
+                            cudaMemcpyDeviceToDevice, 0);
+        if (i == 15 && ws->dump_l15)
+            cudaMemcpyAsync(ws->dump_l15, ws->h, (size_t)S * d * 2,
+                            cudaMemcpyDeviceToDevice, 0);
+        if (i == 27 && ws->dump_l27)
+            cudaMemcpyAsync(ws->dump_l27, ws->h, (size_t)S * d * 2,
                             cudaMemcpyDeviceToDevice, 0);
     }
 

@@ -71,6 +71,8 @@ typedef struct {
     void *dump_emb;          /* [seq, hidden] after the embedding stage */
     void *dump_l0;           /* [seq, hidden] after layer 0 (global)     */
     void *dump_l1;           /* [seq, hidden] after layer 1 (sliding)    */
+    void *dump_l15;          /* sparse encoder checkpoints               */
+    void *dump_l27;
 
     int64_t bytes;
 } laya_encoder_ws;
@@ -95,6 +97,8 @@ enum {
     LAYA_DUMP_EMBEDDINGS = 1 << 0,
     LAYA_DUMP_LAYER0     = 1 << 1,
     LAYA_DUMP_LAYER1     = 1 << 2,
+    LAYA_DUMP_LAYER15    = 1 << 3,
+    LAYA_DUMP_LAYER27    = 1 << 4,
 };
 void laya_encoder_set_dump(laya_encoder *enc, unsigned mask);
 

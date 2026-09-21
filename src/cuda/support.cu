@@ -43,3 +43,29 @@ void laya_f32_buf_to_bf16(const float *src, void *dst, size_t n) {
     uint16_t *d = (uint16_t *)dst;
     for (size_t i = 0; i < n; i++) d[i] = laya_f32_to_bf16(src[i]);
 }
+
+/* ---------- device FP32<->BF16 elementwise casts ---------- */
+
+__global__ void laya_dev_cast_f32_to_bf16_kernel(const float *__restrict__ in,
+                                                 uint16_t *__restrict__ out, size_t n) {
+    size_t i = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) out[i] = laya_dev_f32_to_bf16(in[i]);
+}
+
+__global__ void laya_dev_cast_bf16_to_f32_kernel(const uint16_t *__restrict__ in,
+                                                 float *__restrict__ out, size_t n) {
+    size_t i = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) out[i] = laya_dev_bf16_to_f32(in[i]);
+}
+
+void laya_cast_f32_to_bf16(const void *in_dev, void *out_dev, size_t n) {
+    if (!in_dev || !out_dev || n == 0) return;
+    laya_dev_cast_f32_to_bf16_kernel<<<(unsigned)((n + 255) / 256), 256>>>(
+        (const float *)in_dev, (uint16_t *)out_dev, n);
+}
+
+void laya_cast_bf16_to_f32(const void *in_dev, void *out_dev, size_t n) {
+    if (!in_dev || !out_dev || n == 0) return;
+    laya_dev_cast_bf16_to_f32_kernel<<<(unsigned)((n + 255) / 256), 256>>>(
+        (const uint16_t *)in_dev, (float *)out_dev, n);
+}

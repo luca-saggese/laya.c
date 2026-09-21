@@ -23,7 +23,7 @@ CUDNN_LDFLAGS  := -L$(CUDNN_HOME)/lib -lcudnn
 
 TARGET_ARCH ?= sm_121
 
-CORE_SRCS := src/io/hd_json.c src/io/hd_gguf.c src/laya/model.c src/laya/laya_sequence.c src/tokenizer/laya_tokenizer.c
+CORE_SRCS := src/io/hd_json.c src/io/hd_gguf.c src/laya/model.c src/laya/laya_sequence.c src/laya/modernbert.c src/laya/decision.c src/laya/laya_encode.c src/laya/laya_infer.c src/tokenizer/laya_tokenizer.c
 SRCS      := src/main.c $(CORE_SRCS) src/runtime/laya_timing.c
 OBJS      := $(SRCS:.c=.o)
 

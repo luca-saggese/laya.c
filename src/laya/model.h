@@ -77,6 +77,8 @@ typedef struct {
 typedef struct {
     void *ptr;
     int64_t nbytes;
+    int32_t rank;        /* GGUF rank; 0 when the tensor is absent (layer 0 norm) */
+    int64_t shape[4];    /* GGUF dims (reversed by the loader to torch order) */
     char name[160];
 } laya_tensor;
 

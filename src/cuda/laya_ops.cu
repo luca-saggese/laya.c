@@ -71,6 +71,59 @@ void laya_layernorm(const void *x, const void *w, const void *b,
         (uint16_t *)y, rows, cols, eps);
 }
 
+/* fp32 variant: the oracle keeps nn.LayerNorm in fp32 under autocast, so the
+   embedding norm and every block norm run here with an fp32 weight and an fp32
+   residual stream. Same reduction order as the bf16 kernel. */
+__global__ void laya_layernorm_f32_kernel(const float *__restrict__ x,
+                                          const float *__restrict__ w,
+                                          const float *__restrict__ b,
+                                          float *__restrict__ y,
+                                          int rows, int cols, float eps) {
+    int row = blockIdx.x;
+    if (row >= rows) return;
+    const float *xr = x + (size_t)row * cols;
+    float *yr = y + (size_t)row * cols;
+    int t = threadIdx.x;
+    int nt = blockDim.x;
+    float mean = 0.0f, var = 0.0f;
+    for (int i = t; i < cols; i += nt) {
+        float v = xr[i];
+        mean += v;
+        var += v * v;
+    }
+    __shared__ float s_m[256], s_v[256];
+    s_m[t] = mean; s_v[t] = var;
+    __syncthreads();
+    for (int s = nt / 2; s > 0; s >>= 1) {
+        if (t < s) { s_m[t] += s_m[t + s]; s_v[t] += s_v[t + s]; }
+        __syncthreads();
+    }
+    if (t == 0) {
+        float inv = 1.0f / (float)cols;
+        s_m[0] *= inv;
+        s_v[0] = s_v[0] * inv - s_m[0] * s_m[0];
+    }
+    __syncthreads();
+    float inv_std = rsqrtf(s_v[0] + eps);
+    for (int i = t; i < cols; i += nt) {
+        float v = (xr[i] - s_m[0]) * inv_std;
+        float wv = w[i];
+        float bv = b ? b[i] : 0.0f;
+        yr[i] = v * wv + bv;
+    }
+}
+
+void laya_layernorm_f32(const void *x, const void *w, const void *b,
+                        void *y, int rows, int cols, float eps) {
+    if (!x || !w || !y || rows <= 0 || cols <= 0) {
+        snprintf(laya_cuda_errbuf(), 512, "layernorm_f32: bad args");
+        return;
+    }
+    laya_layernorm_f32_kernel<<<rows, 256>>>(
+        (const float *)x, (const float *)w, (const float *)b,
+        (float *)y, rows, cols, eps);
+}
+
 /* ------------------------------------------------------------------ */
 /* GELU (exact erf form; ModernBERT hidden_activation = "gelu")        */
 /* ------------------------------------------------------------------ */
@@ -272,4 +325,158 @@ void laya_top2_entropy(const float *probs_dev, float *feats_dev, int rows, int K
         return;
     }
     laya_top2_entropy_kernel<<<rows, 1>>>(probs_dev, feats_dev, rows, K);
+}
+/* ------------------------------------------------------------------ */
+/* Layout: fused qkv [S,3,H,hd] -> head-major q/k/v [H,S,hd]           */
+/* ------------------------------------------------------------------ */
+
+/* ModernBERT does qkv.view(S, 3, H, hd).unbind(-3).transpose(1,2), i.e. the
+ * fused projection is stored [S, 3, H, hd] and each of q/k/v becomes
+ * [H, S, hd] -- exactly what laya_attention_eager consumes. */
+__global__ void laya_qkv_split_kernel(const uint16_t *__restrict__ qkv,
+                                      uint16_t *__restrict__ q,
+                                      uint16_t *__restrict__ k,
+                                      uint16_t *__restrict__ v,
+                                      int seq, int heads, int hd) {
+    long total = (long)seq * heads * hd;
+    long idx = (long)blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= total) return;
+    int e = (int)(idx % hd);
+    long sh = idx / hd;
+    int h = (int)(sh % heads);
+    int s = (int)(sh / heads);
+    const uint16_t *src = qkv + ((long)s * 3 * heads + (long)h) * hd + e;
+    long dst = ((long)h * seq + s) * hd + e;
+    q[dst] = src[0];
+    k[dst] = src[(long)heads * hd];
+    v[dst] = src[2L * heads * hd];
+}
+
+void laya_qkv_split(const void *qkv_dev, void *q_dev, void *k_dev, void *v_dev,
+                    int seq, int heads, int hd) {
+    if (!qkv_dev || !q_dev || !k_dev || !v_dev || seq <= 0 || heads <= 0 || hd <= 0) {
+        snprintf(laya_cuda_errbuf(), 512, "qkv_split: bad args");
+        return;
+    }
+    long total = (long)seq * heads * hd;
+    laya_qkv_split_kernel<<<(total + 255) / 256, 256>>>(
+        (const uint16_t *)qkv_dev, (uint16_t *)q_dev, (uint16_t *)k_dev,
+        (uint16_t *)v_dev, seq, heads, hd);
+}
+
+/* ------------------------------------------------------------------ */
+/* Layout: Wi output [S, 2*I] -> (input, gate) halves of [S, I]        */
+/* ------------------------------------------------------------------ */
+
+/* ModernBertMLP: input, gate = Wi(h).chunk(2, -1); act(input) * gate.
+ * The first half is the activation input, the second half is the gate. */
+__global__ void laya_glu_split_kernel(const uint16_t *__restrict__ fused,
+                                      uint16_t *__restrict__ input,
+                                      uint16_t *__restrict__ gate,
+                                      int seq, int inter) {
+    long total = (long)seq * inter;
+    long idx = (long)blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= total) return;
+    int c = (int)(idx % inter);
+    long s = idx / inter;
+    const uint16_t *src = fused + (s * 2 * inter) + c;
+    input[idx] = src[0];
+    gate[idx] = src[inter];
+}
+
+void laya_glu_split(const void *fused_dev, void *input_dev, void *gate_dev,
+                    int seq, int inter) {
+    if (!fused_dev || !input_dev || !gate_dev || seq <= 0 || inter <= 0) {
+        snprintf(laya_cuda_errbuf(), 512, "glu_split: bad args");
+        return;
+    }
+    long total = (long)seq * inter;
+    laya_glu_split_kernel<<<(total + 255) / 256, 256>>>(
+        (const uint16_t *)fused_dev, (uint16_t *)input_dev, (uint16_t *)gate_dev,
+        seq, inter);
+}
+
+/* ------------------------------------------------------------------ */
+/* Attention with caller-provided fp32 score scratch                   */
+/* ------------------------------------------------------------------ */
+
+/* Same math as laya_attention_eager but with the fp32 score scratch and the
+ * head-major output supplied by the caller, so the steady-state forward does
+ * no allocation at all (the o1.c workspace policy). */
+__global__ void laya_attn_scores_ws_kernel(const uint16_t *__restrict__ q,
+                                           const uint16_t *__restrict__ k,
+                                           const uint16_t *__restrict__ mask,
+                                           float *__restrict__ scores,
+                                           int heads, int seq, int d, float scaling) {
+    long idx = (long)blockIdx.x * blockDim.x + threadIdx.x;
+    long total = (long)heads * seq * seq;
+    if (idx >= total) return;
+    int t = (int)(idx % seq);
+    long hs = idx / seq;
+    int s = (int)(hs % seq);
+    int h = (int)(hs / seq);
+    const uint16_t *qr = q + ((long)h * seq + s) * d;
+    const uint16_t *kr = k + ((long)h * seq + t) * d;
+    float acc = 0.0f;
+    for (int i = 0; i < d; i++) acc += laya_dev_bf16_to_f32(qr[i]) * laya_dev_bf16_to_f32(kr[i]);
+    acc *= scaling;
+    acc += laya_dev_bf16_to_f32(mask[(size_t)s * seq + t]);
+    scores[idx] = acc;
+}
+
+/* softmax over t in fp32, then round to bf16 once (torch: softmax(dtype=f32).to(q.dtype)). */
+__global__ void laya_attn_softmax_ws_kernel(const float *__restrict__ scores,
+                                            uint16_t *__restrict__ probs,
+                                            int heads, int seq) {
+    long idx = (long)blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= (long)heads * seq) return;
+    int s = (int)(idx % seq);
+    int h = (int)(idx / seq);
+    const float *row = scores + ((long)h * seq + s) * seq;
+    uint16_t *pr = probs + ((long)h * seq + s) * seq;
+    float mx = -INFINITY;
+    for (int t = 0; t < seq; t++) mx = fmaxf(mx, row[t]);
+    float sum = 0.0f;
+    for (int t = 0; t < seq; t++) sum += expf(row[t] - mx);
+    float inv = 1.0f / sum;
+    for (int t = 0; t < seq; t++) pr[t] = laya_dev_f32_to_bf16(expf(row[t] - mx) * inv);
+}
+
+/* out[h,s,:] = sum_t probs[h,s,t] * v[h,t,:] (no GQA: ModernBERT has no MQA). */
+__global__ void laya_attn_out_ws_kernel(const uint16_t *__restrict__ probs,
+                                        const uint16_t *__restrict__ v,
+                                        uint16_t *__restrict__ out,
+                                        int heads, int seq, int d) {
+    long idx = (long)blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= (long)heads * seq * d) return;
+    int e = (int)(idx % d);
+    long hs = idx / d;
+    int s = (int)(hs % seq);
+    int h = (int)(hs / seq);
+    const uint16_t *pr = probs + ((long)h * seq + s) * seq;
+    const uint16_t *vr = v + (long)h * seq * d + e;
+    float acc = 0.0f;
+    for (int t = 0; t < seq; t++) acc += laya_dev_bf16_to_f32(pr[t]) * laya_dev_bf16_to_f32(vr[(long)t * d]);
+    out[idx] = laya_dev_f32_to_bf16(acc);
+}
+
+void laya_attention_ws(const void *q_dev, const void *k_dev, const void *v_dev,
+                       const void *mask_dev, float *scores_dev, void *probs_dev,
+                       void *out_dev, int heads, int seq, int dim, float scaling) {
+    if (!q_dev || !k_dev || !v_dev || !mask_dev || !scores_dev || !probs_dev || !out_dev ||
+        heads <= 0 || seq <= 0 || dim <= 0) {
+        snprintf(laya_cuda_errbuf(), 512, "attention_ws: bad args");
+        return;
+    }
+    long total_s = (long)heads * seq * seq;
+    laya_attn_scores_ws_kernel<<<(total_s + 255) / 256, 256>>>(
+        (const uint16_t *)q_dev, (const uint16_t *)k_dev, (const uint16_t *)mask_dev,
+        scores_dev, heads, seq, dim, scaling);
+    long rows = (long)heads * seq;
+    laya_attn_softmax_ws_kernel<<<(rows + 255) / 256, 256>>>(
+        scores_dev, (uint16_t *)probs_dev, heads, seq);
+    long total_o = (long)heads * seq * dim;
+    laya_attn_out_ws_kernel<<<(total_o + 255) / 256, 256>>>(
+        (const uint16_t *)probs_dev, (const uint16_t *)v_dev, (uint16_t *)out_dev,
+        heads, seq, dim);
 }

@@ -19,6 +19,15 @@ static void gguf_err(const char *fmt, ...) {
 
 const char *laya_gguf_last_error(void) { return g_gguf_error; }
 
+const char *laya_ggml_type_name(uint32_t type) {
+    switch (type) {
+        case LAYA_GGML_TYPE_F32:  return "F32";
+        case LAYA_GGML_TYPE_F16:  return "F16";
+        case LAYA_GGML_TYPE_BF16: return "BF16";
+        default: return "unknown";
+    }
+}
+
 /* ---- little-endian readers ---- */
 
 static uint64_t rd_u64(const uint8_t *p) {

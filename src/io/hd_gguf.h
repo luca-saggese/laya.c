@@ -24,6 +24,9 @@
 #define LAYA_GGML_TYPE_F16 1
 #define LAYA_GGML_TYPE_BF16 30
 
+/* Human readable name for a ggml_type, for error messages. */
+const char *laya_ggml_type_name(uint32_t type);
+
 typedef struct {
     char *name;
     uint32_t n_dims;

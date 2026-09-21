@@ -38,6 +38,11 @@ uint16_t laya_f32_to_bf16(float f);
 void laya_bf16_buf_to_f32(const void *src, float *dst, size_t n);
 void laya_f32_buf_to_bf16(const float *src, void *dst, size_t n);
 
+/* Device elementwise casts, used to cross the autocast boundary: the oracle
+ * keeps the residual stream fp32 and only the nn.Linear inputs/outputs bf16. */
+void laya_cast_f32_to_bf16(const void *in_dev, void *out_dev, size_t n);
+void laya_cast_bf16_to_f32(const void *in_dev, void *out_dev, size_t n);
+
 /* ------------------------------------------------------------------ */
 /* Error reporting                                                     */
 /* ------------------------------------------------------------------ */
@@ -65,6 +70,9 @@ void laya_swiglu(const void *gate_dev, const void *up_dev, void *y_dev, size_t n
 
 /* Residual add (class B): y[i] = x[i] + a[i] elementwise, bf16. */
 void laya_residual_add(const void *x_dev, const void *a_dev, void *y_dev, size_t n);
+
+/* Same add on an fp32 residual stream (oracle autocast keeps it fp32). */
+void laya_residual_add_f32(const void *x_dev, const void *a_dev, void *y_dev, size_t n);
 
 /*
  * Linear / GEMM (class C): y[M,N] = x[M,K] x W[K,N]^T with fp32 accumulation.
@@ -134,6 +142,10 @@ void laya_head_merge(const void *in_dev, void *out_dev, int seq, int heads, int 
  */
 void laya_gather_rows(const void *table_dev, const void *idx_dev, void *out_dev,
                     int M, int cols, int64_t nrows);
+
+/* Same lookup from an fp32 table into an fp32 activation. */
+void laya_gather_rows_f32(const void *table_dev, const void *idx_dev, void *out_dev,
+                          int M, int cols, int64_t nrows);
 
 /*
  * Timestep conditioning (class A copy): out[row] = t_emb when idx[row]==tms_id
@@ -205,6 +217,11 @@ void laya_unipc_predict(const float *sample_dev, const float *mo0_dev,
 void laya_layernorm(const void *x, const void *w, const void *b,
                     void *y, int rows, int cols, float eps);
 
+/* Same LayerNorm with an fp32 activation and fp32 weight/bias, matching the
+ * oracle's autocast policy (nn.LayerNorm is not lowered to bf16). */
+void laya_layernorm_f32(const void *x, const void *w, const void *b,
+                        void *y, int rows, int cols, float eps);
+
 /* Exact GELU: 0.5*x*(1+erf(x/sqrt(2))), bf16 elementwise. */
 void laya_gelu(const void *x, void *y, size_t n);
 
@@ -226,11 +243,34 @@ void laya_attn_mask(void *mask_dev, int seq, int window, int sliding);
 void laya_gather_pos(const void *h_dev, const void *idx_dev, void *out_dev,
                      int M, int cols);
 
+/* fused qkv [seq,3,heads,hd] -> head-major q/k/v [heads,seq,hd] bf16. */
+void laya_qkv_split(const void *qkv_dev, void *q_dev, void *k_dev, void *v_dev,
+                    int seq, int heads, int hd);
+
+/* Wi output [seq,2*inter] -> input half and gate half, each [seq,inter] bf16. */
+void laya_glu_split(const void *fused_dev, void *input_dev, void *gate_dev,
+                    int seq, int inter);
+
+/* Attention with caller-owned fp32 score scratch and bf16 head-major out.
+ * Same math as laya_attention_eager, but allocation-free for the forward. */
+void laya_attention_ws(const void *q_dev, const void *k_dev, const void *v_dev,
+                       const void *mask_dev, float *scores_dev, void *probs_dev,
+                       void *out_dev, int heads, int seq, int dim, float scaling);
+
 /* Row-wise softmax over K logits (fp32). */
 void laya_softmax_f32(const float *logits_dev, float *probs_dev, int rows, int K);
 
 /* feats[r] = [top1, top1-top2, entropy/log(k), k/255] from softmax probs. */
 void laya_top2_entropy(const float *probs_dev, float *feats_dev, int rows, int K);
+
+/* ReLU: y = max(x, 0), bf16 elementwise. Used by the Laya decision-head
+ * TransformerEncoderLayer, whose default activation is ReLU (not GELU). */
+void laya_relu(const void *x_dev, void *y_dev, size_t n);
+
+/* y[r, c] = x[r, c] + row[c] for x/y [rows, cols], row [cols] bf16.
+ * Reproduces `h + type_emb(qtype)[:, None, :]`. */
+void laya_bcast_add(const void *x_dev, const void *row_dev, void *y_dev,
+                    int rows, int cols);
 
 #ifdef __cplusplus
 }
