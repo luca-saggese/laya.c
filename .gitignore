@@ -3,3 +3,6 @@
 /build/
 *.o
 *.d
+__pycache__/
+*.pyc
+/models/hf-laya/*.safetensors

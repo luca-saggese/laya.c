@@ -1,0 +1,211 @@
+{
+  "schema_id": "claims-auto-it-v2",
+  "questions": {
+    "event_type": {
+      "type": "choice",
+      "instructions": "Classifica la tipologia principale del sinistro descritto.",
+      "criteria": {
+        "collision": "collisione o urto mentre il veicolo era in movimento o contro un ostacolo",
+        "parking_damage": "veicolo trovato danneggiato mentre era parcheggiato o in sosta, senza dinamica di marcia",
+        "theft": "furto riuscito del veicolo o di componenti rilevanti",
+        "attempted_theft": "tentativo di furto non riuscito con eventuali danni",
+        "fire": "incendio o principio d'incendio come causa principale",
+        "glass": "rottura o danneggiamento di parabrezza, lunotto o altri cristalli come evento principale",
+        "weather": "danno causato principalmente da grandine, vento, allagamento o altro evento atmosferico",
+        "vandalism": "danno intenzionale provocato da terzi senza finalita' di furto",
+        "animal_collision": "urto con animale come causa principale",
+        "road_hazard": "danno causato principalmente da buca, detrito, ostacolo o dissesto stradale",
+        "other": "evento non riconducibile in modo affidabile alle categorie precedenti"
+      }
+    },
+    "event_subtype": {
+      "type": "choice",
+      "instructions": "Individua il sottotipo piu' specifico compatibile con la tipologia di evento.",
+      "criteria": {
+        "rear_end": "tamponamento o urto posteriore",
+        "intersection_collision": "collisione in intersezione o mancata precedenza",
+        "side_impact": "urto laterale o fiancata",
+        "single_vehicle": "uscita autonoma di strada o urto contro ostacolo senza altri veicoli",
+        "parked_vehicle_hit": "veicolo urtato mentre era in sosta",
+        "hail": "danni da grandine",
+        "flood": "danni da allagamento o acqua",
+        "wind": "danni da vento forte o caduta di rami",
+        "windshield_chip": "scheggiatura del parabrezza",
+        "windshield_crack": "crepa o rottura del parabrezza o di altro cristallo",
+        "vehicle_theft": "furto dell'intero veicolo",
+        "component_theft": "furto di componenti, parti o accessori",
+        "attempted_vehicle_theft": "tentativo di furto del veicolo non riuscito",
+        "keying": "danneggiamento volontario con graffi o strisciate",
+        "intentional_damage": "danneggiamento volontario di altro tipo",
+        "animal_impact": "urto con animale",
+        "pothole": "danno da buca o dissesto stradale",
+        "road_debris": "danno da detrito od ostacolo sulla carreggiata",
+        "other": "sottotipo non altrimenti classificabile"
+      }
+    },
+    "liability_context": {
+      "type": "choice",
+      "instructions": "Qual e' il contesto di responsabilita' desumibile dalla dinamica descritta?",
+      "criteria": {
+        "insured_at_fault": "dinamica che indica responsabilita' prevalente dell'assicurato",
+        "third_party_at_fault": "dinamica che indica responsabilita' prevalente di un terzo",
+        "shared_fault": "responsabilita' concorsuale o ripartita",
+        "no_third_party": "nessun terzo coinvolto nella dinamica",
+        "unidentified_third_party": "terzo coinvolto ma non identificato",
+        "undetermined": "responsabilita' non determinabile dalle informazioni disponibili"
+      }
+    },
+    "vehicles_involved": {
+      "type": "choice",
+      "instructions": "Quanti veicoli risultano coinvolti nella dinamica?",
+      "criteria": {
+        "one": "un solo veicolo",
+        "two": "due veicoli",
+        "three_or_more": "tre o piu' veicoli",
+        "unknown": "numero di veicoli non desumibile"
+      }
+    },
+    "third_party_involved": {
+      "type": "noul",
+      "instructions": "E' coinvolto almeno un terzo, identificato o chiaramente presente nella dinamica?"
+    },
+    "counterparty_identified": {
+      "type": "noul",
+      "instructions": "La controparte e' identificata con dati sufficienti (nome o targa)?"
+    },
+    "counterparty_insurance_known": {
+      "type": "noul",
+      "instructions": "Sono disponibili i dati assicurativi della controparte?"
+    },
+    "authority_involved": {
+      "type": "noul",
+      "instructions": "Sono intervenute forze dell'ordine o autorita' sul sinistro?"
+    },
+    "event_date_known": {
+      "type": "noul",
+      "instructions": "La data o la finestra temporale dell'evento e' nota con ragionevole certezza?"
+    },
+    "injury_reported": {
+      "type": "noul",
+      "instructions": "Nel sinistro vengono riportate lesioni o possibili lesioni a persone?"
+    },
+    "injured_party_role": {
+      "type": "choice",
+      "instructions": "Chi risulta ferito o potenzialmente ferito? Usa multiple quando sono ferite piu' persone con ruoli diversi.",
+      "criteria": {
+        "none": "nessun ferito",
+        "insured_driver": "conducente del veicolo assicurato",
+        "insured_passenger": "passeggero del veicolo assicurato",
+        "third_party_driver": "conducente del veicolo terzo",
+        "third_party_passenger": "passeggero del veicolo terzo",
+        "pedestrian_or_cyclist": "pedone o ciclista",
+        "multiple": "piu' persone ferite con ruoli diversi",
+        "unknown": "lesioni riportate ma ruolo non chiaro"
+      }
+    },
+    "injury_severity": {
+      "type": "choice",
+      "instructions": "Qual e' la gravita' delle lesioni riportate?",
+      "criteria": {
+        "none": "nessuna lesione",
+        "minor": "lesioni lievi o referto di pronto soccorso senza ricovero",
+        "moderate": "lesioni con prognosi significativa",
+        "severe": "lesioni gravi o ricovero prolungato"
+      }
+    },
+    "vehicle_drivable": {
+      "type": "noul",
+      "instructions": "Il veicolo assicurato risulta utilizzabile e in grado di marciare?"
+    },
+    "towing_needed": {
+      "type": "noul",
+      "instructions": "Il veicolo richiede soccorso stradale, traino o rimozione?"
+    },
+    "damage_severity": {
+      "type": "score",
+      "instructions": "Quanto e' grave il danno al veicolo assicurato?",
+      "criteria": [
+        "nessun danno rilevante",
+        "danno lieve",
+        "danno moderato",
+        "danno grave",
+        "perdita totale"
+      ]
+    },
+    "rca_candidate": {
+      "type": "noul",
+      "instructions": "La dinamica rende plausibilmente rilevante la garanzia RCA (danno a terzi o responsabilita' verso terzi)?"
+    },
+    "kasko_candidate": {
+      "type": "noul",
+      "instructions": "La dinamica rende plausibilmente rilevante la garanzia Kasko (danni al veicolo assicurato)?"
+    },
+    "driver_injury_candidate": {
+      "type": "noul",
+      "instructions": "La dinamica rende plausibilmente rilevante la copertura infortuni del conducente?"
+    },
+    "legal_protection_candidate": {
+      "type": "noul",
+      "instructions": "La dinamica rende plausibilmente rilevante la tutela legale?"
+    },
+    "roadside_assistance_candidate": {
+      "type": "noul",
+      "instructions": "La dinamica rende plausibilmente rilevante l'assistenza stradale?"
+    },
+    "glass_candidate": {
+      "type": "noul",
+      "instructions": "La dinamica rende plausibilmente rilevante la garanzia cristalli?"
+    },
+    "theft_candidate": {
+      "type": "noul",
+      "instructions": "La dinamica rende plausibilmente rilevante la garanzia furto?"
+    },
+    "fire_candidate": {
+      "type": "noul",
+      "instructions": "La dinamica rende plausibilmente rilevante la garanzia incendio?"
+    },
+    "natural_events_candidate": {
+      "type": "noul",
+      "instructions": "La dinamica rende plausibilmente rilevante la garanzia eventi naturali o atmosferici?"
+    },
+    "vandalism_candidate": {
+      "type": "noul",
+      "instructions": "La dinamica rende plausibilmente rilevante la garanzia atti vandalici?"
+    },
+    "direct_compensation_candidate": {
+      "type": "noul",
+      "instructions": "Il caso presenta i prerequisiti descrittivi tipici per una gestione a risarcimento diretto?"
+    },
+    "documents_complete": {
+      "type": "score",
+      "instructions": "Quanto e' completa la documentazione per avviare la gestione ordinaria?",
+      "criteria": [
+        "insufficiente",
+        "parziale",
+        "sufficiente"
+      ]
+    },
+    "urgency": {
+      "type": "score",
+      "instructions": "Valuta la priorita' operativa del caso.",
+      "criteria": [
+        "gestione ordinaria",
+        "gestione prioritaria a breve",
+        "attenzione umana immediata"
+      ]
+    },
+    "needs_human_review": {
+      "type": "noul",
+      "instructions": "Il caso richiede revisione umana per ambiguita', contraddizioni, severita' o eccezioni?"
+    },
+    "ambiguity_level": {
+      "type": "score",
+      "instructions": "Quanto e' ambiguo o contraddittorio il quadro informativo?",
+      "criteria": [
+        "chiaro",
+        "alcune incertezze",
+        "fortemente ambiguo"
+      ]
+    }
+  }
+}

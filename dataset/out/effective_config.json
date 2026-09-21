@@ -27,8 +27,7 @@
     "retry_base_seconds": 2.0,
     "http_referer": "",
     "x_title": "Laya Synthetic Claims Generator",
-    "structured_output_fallback": true,
-    "structured_output_first": true
+    "structured_output_fallback": true
   },
   "models": {
     "planner": {
@@ -47,11 +46,7 @@
       "model": "~google/gemini-pro-latest",
       "temperature": 0.15,
       "max_tokens": 3000,
-      "extra": {
-        "reasoning": {
-          "effort": "low"
-        }
-      }
+      "extra": {}
     }
   },
   "generation": {

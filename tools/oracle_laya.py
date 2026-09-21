@@ -200,7 +200,13 @@ def run_dump(agent, request: Dict[str, Any], dumps: List[str]) -> Dict[str, Any]
 
         hooks.append(encoder.layers[li].register_forward_hook(layer_hook))
 
-    with torch.no_grad():
+    # The real inference path (Agent.answer) runs under autocast with
+    # cfg["amp_dtype"], so the parity dump has to as well or the taps are
+    # bf16 activations compared against fp32 activations.
+    use_amp = agent.device.type == "cuda"
+    with torch.no_grad(), torch.autocast(
+        device_type=agent.device.type, dtype=agent.dtype, enabled=use_amp
+    ):
         logits, act = model(
             batch["input_ids"].to(dev),
             batch["attention_mask"].to(dev),
@@ -218,7 +224,9 @@ def run_dump(agent, request: Dict[str, Any], dumps: List[str]) -> Dict[str, Any]
         result["layers"] = {str(k): v.tolist() for k, v in captured["layers"].items() if v is not None}
 
     if "final" in dumps:
-        with torch.no_grad():
+        with torch.no_grad(), torch.autocast(
+            device_type=agent.device.type, dtype=agent.dtype, enabled=use_amp
+        ):
             h = encoder(
                 input_ids=batch["input_ids"].to(dev),
                 attention_mask=batch["attention_mask"].to(dev),
@@ -226,10 +234,11 @@ def run_dump(agent, request: Dict[str, Any], dumps: List[str]) -> Dict[str, Any]
         result["final"] = h.detach().float().cpu().tolist()
 
     if "head" in dumps or "gather" in dumps:
-        h = encoder(
-            input_ids=batch["input_ids"].to(dev),
-            attention_mask=batch["attention_mask"].to(dev),
-        ).last_hidden_state
+        with torch.autocast(device_type=agent.device.type, dtype=agent.dtype, enabled=use_amp):
+            h = encoder(
+                input_ids=batch["input_ids"].to(dev),
+                attention_mask=batch["attention_mask"].to(dev),
+            ).last_hidden_state
         h = h + model.type_emb(batch["qtype"].to(dev))[:, None, :]
         if model.head is not None:
             pad = ~batch["attention_mask"].to(dev).bool()
