@@ -1052,12 +1052,21 @@ static void emit_answers(buf *b, const laya_infer_result *res, int n,
         } else if (r->qtype == LAYA_QTYPE_SCORE) {
             buf_puts(b, "\"type\":\"score\",\"score\":");
             emit_f32(b, r->score);
+            /* The legend carries the caller's criteria verbatim, exactly as
+             * Python emits `{str(i): c for i, c in enumerate(q["crit"])}`;
+             * the rendered option text is what the prompt uses, not the
+             * legend. */
             buf_puts(b, ",\"legend\":{");
+            const hd_json *crit = hd_json_get(q->values[i], "criteria");
             for (int k = 0; k < r->n_options; k++) {
                 if (k) buf_putc(b, ',');
                 json_escape(b, r->option_keys[k] ? r->option_keys[k] : "");
                 buf_putc(b, ':');
-                json_escape(b, r->option_labels[k] ? r->option_labels[k] : "");
+                if (crit && crit->type == HD_JSON_ARRAY &&
+                    (size_t)k < crit->u.array.count)
+                    json_emit_value(b, crit->u.array.items[k]);
+                else
+                    json_escape(b, r->option_labels[k] ? r->option_labels[k] : "");
             }
             buf_puts(b, "},\"probabilities\":{");
             for (int k = 0; k < r->n_options; k++) {

@@ -250,6 +250,9 @@ laya_status laya_decision_init(laya_decision *dec, const laya_model *m,
     ws->ff = p;            p += ffb;
     ws->ff_act = p;        p += ffb;
     ws->mask = p;          p += maskb;
+    /* The fp32 score scratch must be 4-byte aligned; the bf16 mask above it
+     * is only 2-byte aligned (B*S*S*2 bytes), so pad before it. */
+    p = (uint8_t *)(((uintptr_t)p + 3) & ~(uintptr_t)3);
     ws->scores = p;        p += (size_t)H * R * S * 4;
     ws->probs = p;         p += (size_t)H * R * S * 2;
     ws->m_hidden = p;      p += M * (size_t)d * 2;

@@ -449,9 +449,14 @@ static void laya_gemm_cublaslt(const void *x_dev, const void *w_dev,
             snprintf(laya_cuda_errbuf(), 512, "cublasGemmEx fallback failed");
         goto bias;
     }
-    if (laya_lt_run(g_rt, p, x_dev, w_dev, y_dev) != CUBLAS_STATUS_SUCCESS) {
-        snprintf(laya_cuda_errbuf(), 512, "cublasLtMatmul failed");
-        return;
+    {
+        cublasStatus_t rs = laya_lt_run(g_rt, p, x_dev, w_dev, y_dev);
+        if (rs != CUBLAS_STATUS_SUCCESS) {
+            snprintf(laya_cuda_errbuf(), 512,
+                     "cublasLtMatmul failed: status=%d M=%d N=%d K=%d ws=%zu tune=%d",
+                     (int)rs, p->M, p->N, p->K, p->workspace_bytes, p->tuned);
+            return;
+        }
     }
 bias:
     if (bias_dev) {

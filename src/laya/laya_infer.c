@@ -224,7 +224,7 @@ laya_status laya_infer_run(const laya_model *model, const hd_json *root,
                                      mmask, qtype, tok_valid, res);
     if (st != LAYA_OK) {
         laya_set_error("decision head: %s", laya_decision_last_error());
-        free(res);
+        free(res); res = NULL;
         laya_decision_free(&dec);
         laya_encoder_free(&enc);
         goto cleanup;
