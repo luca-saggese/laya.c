@@ -337,10 +337,6 @@ laya_status laya_encoder_forward_batch(laya_encoder *enc, const laya_model *m,
         cudaMemset(vbuf, 1, (size_t)R);
     laya_attn_mask_batch(ws->mask_full, vbuf, B, S, S, 0);
     laya_attn_mask_batch(ws->mask_sliding, vbuf, B, S, c->sliding_window, 1);
-    dump_dev("%s.maskfull", ws->mask_full, (size_t)B * S * S * 2);
-    dump_dev("%s.maskslid", ws->mask_sliding, (size_t)B * S * S * 2);
-    dump_dev("%s.valid", vbuf, (size_t)R);
-    dump_dev("%s.ids", ids_dev, (size_t)R * 4);
 
     /* ---- embeddings: norm(tok_embeddings(ids)) ---- */
     laya_gather_rows(m->tok_embeddings.ptr, ids_dev, ws->h, R, d, c->vocab_size);

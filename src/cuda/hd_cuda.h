@@ -239,6 +239,11 @@ void laya_rope_cos_sin(float *cos_dev, float *sin_dev, int seq, int dim, float t
  * (create_bidirectional_mask returns None for a single unpadded item). */
 void laya_attn_mask(void *mask_dev, int seq, int window, int sliding);
 
+/* Batched block-diagonal additive mask: `batch` contiguous [seq,seq] blocks.
+ * `valid_dev` is a device uint8 [batch*seq] real-token flag, or NULL. */
+void laya_attn_mask_batch(void *mask_dev, const void *valid_dev, int batch,
+                          int seq, int window, int sliding);
+
 /* out[i] = h[idx[i]] for int32 indices; h [S, cols] bf16 -> out [M, cols]. */
 void laya_gather_pos(const void *h_dev, const void *idx_dev, void *out_dev,
                      int M, int cols);
@@ -271,6 +276,11 @@ void laya_relu(const void *x_dev, void *y_dev, size_t n);
  * Reproduces `h + type_emb(qtype)[:, None, :]`. */
 void laya_bcast_add(const void *x_dev, const void *row_dev, void *y_dev,
                     int rows, int cols);
+
+/* Batched form: `rows_vec` is [items, cols] and each item contributes
+ * `item_rows` consecutive rows. y[b*item_rows+r, c] += row[b, c]. */
+void laya_bcast_add_items(const void *x_dev, const void *rows_vec_dev,
+                          void *y_dev, int items, int item_rows, int cols);
 
 #ifdef __cplusplus
 }

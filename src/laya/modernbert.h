@@ -35,37 +35,39 @@
  *    attention primitive consumes.
  */
 typedef struct {
-    int seq;                 /* capacity in tokens */
+    int rows;                /* capacity in flattened rows: batch * item_seq */
+    int item_seq;            /* capacity per item (sequence length)          */
     int hidden;
     int n_heads;
     int head_dim;
     int intermediate;
 
-    void *h;                 /* [seq, hidden] bf16 */
-    void *res;               /* [seq, hidden] bf16 */
-    void *norm;              /* [seq, hidden] bf16 */
-    void *qkv;               /* scratch [seq, max(3*hidden, 2*inter)] bf16 */
+    void *h;                 /* [rows, hidden] bf16 */
+    void *res;               /* [rows, hidden] bf16 */
+    void *norm;              /* [rows, hidden] bf16 */
+    void *qkv;               /* scratch [rows, max(3*hidden, 2*inter)] bf16 */
     int64_t scratch_bytes;   /* capacity of the qkv/Wi scratch slot */
-    void *q;                 /* [n_heads, seq, head_dim] bf16 */
+    void *q;                 /* [n_heads, rows, head_dim] bf16 */
     void *k;
     void *v;
-    void *attn_out;          /* [n_heads, seq, head_dim] -> merged */
+    void *attn_out;          /* [n_heads, rows, head_dim] -> merged */
     void *q_rot;             /* rotation output, separate from q/k    */
     void *k_rot;             /*   because the rope kernel is not safe
                               *   to run in place (it reads the pair) */
-    void *attn_ctx;          /* [seq, hidden] bf16 (Wo output) */
-    void *mlp_gate;          /* [seq, intermediate] bf16 */
-    void *mlp_up;            /* [seq, intermediate] bf16 */
-    void *mlp_act;           /* [seq, intermediate] bf16 */
-    void *mlp_out;           /* [seq, hidden] bf16 */
-    void *rope_cos;          /* [seq, head_dim] f32, global theta */
+    void *attn_ctx;          /* [rows, hidden] bf16 (Wo output) */
+    void *mlp_gate;          /* [rows, intermediate] bf16 */
+    void *mlp_up;            /* [rows, intermediate] bf16 */
+    void *mlp_act;           /* [rows, intermediate] bf16 */
+    void *mlp_out;           /* [rows, hidden] bf16 */
+    void *rope_cos;          /* [item_seq, head_dim] f32, global theta */
     void *rope_sin;
-    void *rope_cos2;         /* [seq, head_dim] f32, sliding theta */
+    void *rope_cos2;         /* [item_seq, head_dim] f32, sliding theta */
     void *rope_sin2;
-    void *mask_full;         /* [1,1,seq,seq] bf16, all-zero */
-    void *mask_sliding;      /* [1,1,seq,seq] bf16 window */
-    void *scores;            /* attention scratch */
-    void *probs;
+    void *mask_full;         /* [batch, item_seq, item_seq] bf16, block-diagonal */
+    void *mask_sliding;      /* [batch, item_seq, item_seq] bf16 window + diagonal */
+    void *scores;            /* [heads, rows, item_seq] f32 attention scratch */
+    void *probs;             /* [heads, rows, item_seq] bf16 */
+    void *valid;             /* [rows] uint8 real-token flags (mask build)  */
 
     /* optional parity taps (allocated only when requested) */
     void *dump_emb;          /* [seq, hidden] after the embedding stage */
@@ -102,17 +104,27 @@ enum {
 };
 void laya_encoder_set_dump(laya_encoder *enc, unsigned mask);
 
-/* Allocates the workspace for the given sequence capacity. Idempotent: a
- * second call with the same (or smaller) seq is a no-op. */
-laya_status laya_encoder_init(laya_encoder *enc, const laya_model *m, int seq);
+/* Allocates the workspace for `batch` items of sequence length `seq`. The
+ * activation dimension is flattened (rows = batch * seq); attention runs one
+ * item at a time over [1, seq, seq] masks, which is what keeps the existing
+ * batch-1 SDPA primitive usable. Idempotent for smaller sizes. */
+laya_status laya_encoder_init(laya_encoder *enc, const laya_model *m, int batch,
+                              int seq);
 
 void laya_encoder_free(laya_encoder *enc);
 
 /*
- * Runs the encoder on a token batch already resident on the device.
- * `ids_dev` is int32 [seq], `out_dev` receives bf16 [seq, hidden].
- * The caller owns out_dev (it is the same buffer handed to the decision head).
+ * Runs the encoder on `batch` token rows already resident on the device.
+ * `ids_dev` is int64 [batch*seq] (row-major, item-major), `attn_dev` is a host
+ * uint8 [batch*seq] mask (1 = real token) used to pad the attention masks, and
+ * `out_dev` receives bf16 [batch*seq, hidden].
+ * `attn_dev` may be NULL, meaning every token is real.
  */
+laya_status laya_encoder_forward_batch(laya_encoder *enc, const laya_model *m,
+                                       const void *ids_dev, int batch, int seq,
+                                       const uint8_t *attn_dev, void *out_dev);
+
+/* Single-item convenience wrapper (batch = 1). */
 laya_status laya_encoder_forward(laya_encoder *enc, const laya_model *m,
                                  const void *ids_dev, int seq, void *out_dev);
 

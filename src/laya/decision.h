@@ -54,38 +54,40 @@ typedef struct {
 /* ---- workspace ---------------------------------------------------- */
 
 typedef struct {
-    int seq;                 /* token capacity                              */
+    int rows;                /* flattened rows: batch * item_seq            */
+    int item_seq;            /* tokens per item                             */
     int hidden;
     int n_heads;
     int head_dim;
     int ffn;                 /* 4 * hidden                                  */
     int n_head_layers;       /* capacity in head layers                     */
     int d_act;               /* hidden + 4                                  */
+    int n_batch;             /* capacity in questions                       */
 
-    void *h;                 /* [seq, hidden] residual stream (bf16)        */
-    void *norm;              /* [seq, hidden] LayerNorm output              */
-    void *qkv;               /* [seq, 3*hidden] fused in_proj               */
-    void *q;                 /* [heads, seq, hd] head-major                 */
+    void *h;                 /* [rows, hidden] residual stream (bf16)        */
+    void *norm;              /* [rows, hidden] LayerNorm output              */
+    void *qkv;               /* [rows, 3*hidden] fused in_proj               */
+    void *q;                 /* [heads, rows, hd] head-major                 */
     void *k;
     void *v;
-    void *attn_out;          /* [heads, seq, hd] attention output           */
-    void *merged;            /* [seq, hidden] head_merge output             */
-    void *proj;              /* [seq, hidden] out_proj / linear2 output     */
-    void *ff;                /* [seq, ffn] linear1 output                   */
-    void *ff_act;            /* [seq, ffn] ReLU output                      */
-    void *mask;              /* [1,1,seq,seq] bf16 additive padding mask    */
-    void *scores;            /* fp32 attention score scratch                */
-    void *probs;             /* [heads, seq, seq] bf16 softmax probs        */
+    void *attn_out;          /* [heads, rows, hd] attention output           */
+    void *merged;            /* [rows, hidden] head_merge output             */
+    void *proj;              /* [rows, hidden] out_proj / linear2 output     */
+    void *ff;                /* [rows, ffn] linear1 output                   */
+    void *ff_act;            /* [rows, ffn] ReLU output                      */
+    void *mask;              /* [batch, item_seq, item_seq] bf16 pad mask    */
+    void *valid;             /* [rows] uint8 real-token flags                */
+    void *scores;            /* fp32 attention score scratch                 */
+    void *probs;             /* [heads, rows, item_seq] bf16 softmax probs   */
 
-    void *m_hidden;          /* [n_markers_cap, hidden] gather output       */
-    void *m_logits;          /* fp32 [n_markers_cap, 1] scorer logits       */
-    int n_markers_cap;
-    void *m_idx_dev;         /* int32 [n_markers_cap] marker positions      */
-    void *type_vec;          /* [hidden] gathered type embedding row        */
-    void *type_idx_dev;      /* int64 [1] qtype index                       */
-    void *act_vec;           /* [d_act] pooled + 4 features, fp32->bf16     */
-    void *act1;              /* [256] action hidden                         */
-    void *act1_act;          /* [256] GELU output                           */
+    void *m_hidden;          /* [n_markers_cap, hidden] gather output        */
+    int n_markers_cap;       /* capacity in markers: batch * kmax            */
+    void *m_idx_dev;         /* int64 [n_markers_cap] flattened row indices  */
+    void *type_vec;          /* [batch, hidden] gathered type embeddings     */
+    void *type_idx_dev;      /* int64 [n_batch] qtype indices                */
+    void *act_vec;           /* [d_act] pooled + 4 features, fp32->bf16      */
+    void *act1;              /* [256] action hidden                          */
+    void *act1_act;          /* [256] GELU output                            */
 
     int64_t bytes;
 } laya_decision_ws;
@@ -100,22 +102,34 @@ laya_status laya_decision_check_weights(const laya_model *m);
 
 const char *laya_decision_last_error(void);
 
-/* Allocates the workspace for (seq, n_markers). Idempotent for smaller sizes. */
+/* Allocates the workspace for (batch x seq) tokens and (batch x kmax) markers.
+ * Idempotent for smaller sizes. */
 laya_status laya_decision_init(laya_decision *dec, const laya_model *m,
-                               int seq, int n_markers);
+                               int batch, int seq, int n_markers);
 
 void laya_decision_free(laya_decision *dec);
 
 /*
  * Runs the decision head on an encoder output already resident on the device.
- * `enc_out_dev` is bf16 [seq, hidden] and is not modified: the type-embedding
- * add writes into the decision workspace.
+ * `enc_out_dev` is bf16 [batch*seq, hidden] and is not modified: the
+ * type-embedding add writes into the decision workspace.
  *
- * `markers_dev` is int32 [n_markers], `marker_mask` is a host uint8 array of
- * length n_markers (1 = real option, 0 = padding), `qtype` is the QTYPES index.
- * `tok_valid` is a host uint8 array of length seq used as the head's
- * src_key_padding_mask (NULL = every token is valid).
+ * `markers_dev` is int64 [batch*kmax] with the FLATTENED row index
+ * (b*seq + marker_pos), `marker_mask` is a host uint8 array of length
+ * batch*kmax (1 = real option, 0 = padding), `qtypes` is [batch] and
+ * `tok_valid` is a host uint8 array of length batch*seq used as the head's
+ * src_key_padding_mask (NULL = every token of every item is valid).
+ * `out` receives one result per question.
  */
+laya_status laya_decision_forward_batch(laya_decision *dec, const laya_model *m,
+                                        const void *enc_out_dev, int batch,
+                                        int seq, const void *markers_dev,
+                                        int kmax, const uint8_t *marker_mask,
+                                        const int32_t *qtypes,
+                                        const uint8_t *tok_valid,
+                                        laya_decision_result *out);
+
+/* Single-question convenience wrapper (batch = 1, marker positions relative). */
 laya_status laya_decision_forward(laya_decision *dec, const laya_model *m,
                                   const void *enc_out_dev, int seq,
                                   const void *markers_dev, int n_markers,

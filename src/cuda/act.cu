@@ -102,3 +102,36 @@ void laya_bcast_add(const void *x_dev, const void *row_dev, void *y_dev,
         (const uint16_t *)x_dev, (const uint16_t *)row_dev, (uint16_t *)y_dev,
         rows, cols);
 }
+
+/* Batched broadcast add: `rows_vec` holds one [cols] row per item, and each
+ * item contributes `item_rows` consecutive rows of the [rows, cols] output.
+ * y[b*item_rows + r, c] = x[b*item_rows + r, c] + rows_vec[b, c].
+ * This is `h + type_emb(qtype)[:, None, :]` for a batch of items. */
+__global__ void laya_bcast_add_items_kernel(const uint16_t *__restrict__ x,
+                                            const uint16_t *__restrict__ rows_vec,
+                                            uint16_t *__restrict__ y,
+                                            int item_rows, int cols) {
+    int c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= cols) return;
+    int b = blockIdx.y;
+    float rv = laya_dev_bf16_to_f32(rows_vec[(size_t)b * cols + c]);
+    const uint16_t *xb = x + (size_t)b * item_rows * cols;
+    uint16_t *yb = y + (size_t)b * item_rows * cols;
+    for (int r = 0; r < item_rows; r++) {
+        size_t i = (size_t)r * cols + c;
+        yb[i] = laya_dev_f32_to_bf16(laya_dev_bf16_to_f32(xb[i]) + rv);
+    }
+}
+
+void laya_bcast_add_items(const void *x_dev, const void *rows_vec_dev,
+                          void *y_dev, int items, int item_rows, int cols) {
+    if (!x_dev || !rows_vec_dev || !y_dev || items <= 0 || item_rows <= 0 || cols <= 0) {
+        snprintf(laya_cuda_errbuf(), 512, "bcast_add_items: bad args");
+        return;
+    }
+    int threads = 256;
+    dim3 grd((cols + threads - 1) / threads, items);
+    laya_bcast_add_items_kernel<<<grd, threads>>>(
+        (const uint16_t *)x_dev, (const uint16_t *)rows_vec_dev,
+        (uint16_t *)y_dev, item_rows, cols);
+}
