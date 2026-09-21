@@ -29,8 +29,8 @@ typedef struct laya_gemm_runtime laya_gemm_runtime;
 
 /*
  * Creates the persistent cuBLAS/cuBLASLt handles and allocates the workspace.
- * Call ONCE at runtime init (e.g. inside hd_weights_to_device). Returns NULL
- * on failure (errbuf set via hd_cuda_errbuf).
+ * Call ONCE at runtime init (e.g. inside laya_weights_to_device). Returns NULL
+ * on failure (errbuf set via laya_cuda_errbuf).
  */
 laya_gemm_runtime *laya_gemm_runtime_init(int device_id, size_t workspace_bytes);
 

@@ -109,7 +109,7 @@ typedef struct {
     cublasLtMatrixLayout_t Bdesc; /* W [N,K] row-major, ld=K, op=T */
     cublasLtMatrixLayout_t Cdesc; /* Y [M,N] row-major, ld=N */
     cublasLtMatmulDesc_t opdesc;
-} hd_lt_plan;
+} laya_lt_plan;
 
 struct laya_gemm_runtime {
     cublasHandle_t cublas;
@@ -118,7 +118,7 @@ struct laya_gemm_runtime {
     size_t workspace_bytes;
     int device_id;
     cublasLtMatmulPreference_t pref;
-    hd_lt_plan plans[HD_LT_MAX_PLANS];
+    laya_lt_plan plans[HD_LT_MAX_PLANS];
     int n_plans;
     int tune;  /* 1 = benchmark candidates with CUDA events, 0 = heuristic[0] */
     int debug; /* 1 = print the selected algorithm per shape */
@@ -202,7 +202,7 @@ void laya_gemm_runtime_destroy(laya_gemm_runtime *rt) {
     if (!rt) return;
     if (g_rt == rt) g_rt = NULL;
     for (int i = 0; i < rt->n_plans; i++) {
-        hd_lt_plan *p = &rt->plans[i];
+        laya_lt_plan *p = &rt->plans[i];
         if (p->opdesc) cublasLtMatmulDescDestroy(p->opdesc);
         if (p->Adesc) cublasLtMatrixLayoutDestroy(p->Adesc);
         if (p->Bdesc) cublasLtMatrixLayoutDestroy(p->Bdesc);
@@ -248,14 +248,14 @@ __global__ void laya_gemm_bias_add_kernel(const uint16_t *__restrict__ bias,
  * algorithm + workspace) is created and tuned once and then reused.
  */
 
-static hd_lt_plan *hd_lt_get_plan(laya_gemm_runtime *rt, int M, int N, int K) {
+static laya_lt_plan *laya_lt_get_plan(laya_gemm_runtime *rt, int M, int N, int K) {
     for (int i = 0; i < rt->n_plans; i++) {
-        hd_lt_plan *p = &rt->plans[i];
+        laya_lt_plan *p = &rt->plans[i];
         if (p->valid && p->M == M && p->N == N && p->K == K) return p;
     }
     if (rt->n_plans >= HD_LT_MAX_PLANS) return NULL;
 
-    hd_lt_plan *p = &rt->plans[rt->n_plans];
+    laya_lt_plan *p = &rt->plans[rt->n_plans];
     memset(p, 0, sizeof(*p));
     p->M = M; p->N = N; p->K = K;
 
@@ -299,7 +299,7 @@ static hd_lt_plan *hd_lt_get_plan(laya_gemm_runtime *rt, int M, int N, int K) {
 }
 
 /* Runs one cuBLASLt matmul with the plan's cached algorithm. */
-static cublasStatus_t hd_lt_run(laya_gemm_runtime *rt, hd_lt_plan *p,
+static cublasStatus_t laya_lt_run(laya_gemm_runtime *rt, laya_lt_plan *p,
                                 const void *x, const void *w, void *y) {
     float alpha = 1.0f, beta = 0.0f;
     return cublasLtMatmul(rt->lt, p->opdesc, &alpha,
@@ -309,7 +309,7 @@ static cublasStatus_t hd_lt_run(laya_gemm_runtime *rt, hd_lt_plan *p,
 }
 
 /* cublasGemmEx reference for the same contract (fallback + tuning oracle). */
-static cublasStatus_t hd_gemmex_run(laya_gemm_runtime *rt,
+static cublasStatus_t laya_gemmex_run(laya_gemm_runtime *rt,
                                     const void *x, const void *w, void *y,
                                     int M, int N, int K) {
     float alpha = 1.0f, beta = 0.0f;
@@ -325,7 +325,7 @@ static cublasStatus_t hd_gemmex_run(laya_gemm_runtime *rt,
  * against cublasGemmEx, benchmarks the valid ones with CUDA events and caches
  * the fastest. Runs once per unique shape (first call), never in steady state.
  */
-static void hd_lt_tune(laya_gemm_runtime *rt, hd_lt_plan *p,
+static void laya_lt_tune(laya_gemm_runtime *rt, laya_lt_plan *p,
                        const void *x, const void *w, void *y) {
     struct timespec _ts0, _ts1;
     clock_gettime(CLOCK_MONOTONIC, &_ts0);
@@ -345,7 +345,7 @@ static void hd_lt_tune(laya_gemm_runtime *rt, hd_lt_plan *p,
     uint16_t *ref = (uint16_t *)malloc(nbytes);
     uint16_t *got = (uint16_t *)malloc(nbytes);
     if (!ref || !got) { free(ref); free(got); p->valid = 0; return; }
-    if (hd_gemmex_run(rt, x, w, y, p->M, p->N, p->K) != CUBLAS_STATUS_SUCCESS) {
+    if (laya_gemmex_run(rt, x, w, y, p->M, p->N, p->K) != CUBLAS_STATUS_SUCCESS) {
         free(ref); free(got); p->valid = 0; return;
     }
     cudaMemcpy(ref, y, nbytes, cudaMemcpyDeviceToHost);
@@ -360,7 +360,7 @@ static void hd_lt_tune(laya_gemm_runtime *rt, hd_lt_plan *p,
         if (results[i].workspaceSize > rt->workspace_bytes) continue;
         p->algo = results[i].algo;
         p->workspace_bytes = results[i].workspaceSize;
-        if (hd_lt_run(rt, p, x, w, y) != CUBLAS_STATUS_SUCCESS) continue;
+        if (laya_lt_run(rt, p, x, w, y) != CUBLAS_STATUS_SUCCESS) continue;
         cudaMemcpy(got, y, nbytes, cudaMemcpyDeviceToHost);
         /* Reject any candidate that does not reproduce the cublasGemmEx
          * result bit-for-bit (same BF16 rounding, same accumulation order
@@ -374,7 +374,7 @@ static void hd_lt_tune(laya_gemm_runtime *rt, hd_lt_plan *p,
         float ms = 0.0f;
         for (int it = 0; it < 3; it++) {
             cudaEventRecord(e0, 0);
-            hd_lt_run(rt, p, x, w, y);
+            laya_lt_run(rt, p, x, w, y);
             cudaEventRecord(e1, 0);
             cudaEventSynchronize(e1);
             float t = 0.0f;
@@ -413,16 +413,16 @@ static void hd_lt_tune(laya_gemm_runtime *rt, hd_lt_plan *p,
 static void laya_gemm_cublaslt(const void *x_dev, const void *w_dev,
                              const void *bias_dev, void *y_dev,
                              int M, int N, int K) {
-    hd_lt_plan *p = hd_lt_get_plan(g_rt, M, N, K);
+    laya_lt_plan *p = laya_lt_get_plan(g_rt, M, N, K);
     if (!p) {
         /* Plan cache exhausted or descriptor creation failed: fall back. */
-        if (hd_gemmex_run(g_rt, x_dev, w_dev, y_dev, M, N, K) != CUBLAS_STATUS_SUCCESS)
+        if (laya_gemmex_run(g_rt, x_dev, w_dev, y_dev, M, N, K) != CUBLAS_STATUS_SUCCESS)
             snprintf(laya_cuda_errbuf(), 512, "cublasGemmEx fallback failed");
         goto bias;
     }
     if (!p->tuned) {
         if (g_rt->tune) {
-            hd_lt_tune(g_rt, p, x_dev, w_dev, y_dev);
+            laya_lt_tune(g_rt, p, x_dev, w_dev, y_dev);
         } else {
             cublasLtMatmulHeuristicResult_t r;
             int got = 0;
@@ -437,7 +437,7 @@ static void laya_gemm_cublaslt(const void *x_dev, const void *w_dev,
         }
     }
     if (!p->valid) {
-        if (hd_gemmex_run(g_rt, x_dev, w_dev, y_dev, M, N, K) != CUBLAS_STATUS_SUCCESS)
+        if (laya_gemmex_run(g_rt, x_dev, w_dev, y_dev, M, N, K) != CUBLAS_STATUS_SUCCESS)
             snprintf(laya_cuda_errbuf(), 512, "cublasGemmEx fallback failed");
         goto bias;
     }
@@ -445,11 +445,11 @@ static void laya_gemm_cublaslt(const void *x_dev, const void *w_dev,
         /* No algorithm was selected for this shape (heuristic miss or tuner
          * rejected every candidate): keep the cublasGemmEx fallback rather
          * than launching an unselected algorithm. */
-        if (hd_gemmex_run(g_rt, x_dev, w_dev, y_dev, M, N, K) != CUBLAS_STATUS_SUCCESS)
+        if (laya_gemmex_run(g_rt, x_dev, w_dev, y_dev, M, N, K) != CUBLAS_STATUS_SUCCESS)
             snprintf(laya_cuda_errbuf(), 512, "cublasGemmEx fallback failed");
         goto bias;
     }
-    if (hd_lt_run(g_rt, p, x_dev, w_dev, y_dev) != CUBLAS_STATUS_SUCCESS) {
+    if (laya_lt_run(g_rt, p, x_dev, w_dev, y_dev) != CUBLAS_STATUS_SUCCESS) {
         snprintf(laya_cuda_errbuf(), 512, "cublasLtMatmul failed");
         return;
     }
@@ -528,7 +528,7 @@ void laya_linear(const void *x_dev, const void *w_dev, const void *bias_dev,
 /* Timestep sinusoidal embedding (class B)                             */
 /* ------------------------------------------------------------------ */
 
-__global__ void hd_timestep_embed_kernel(const float *__restrict__ t,
+__global__ void laya_timestep_embed_kernel(const float *__restrict__ t,
                                          float *__restrict__ y,
                                          int N, int dim) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -544,10 +544,10 @@ __global__ void hd_timestep_embed_kernel(const float *__restrict__ t,
     y[idx] = v;
 }
 
-void hd_timestep_embed(const float *t_dev, float *y_dev, int N, int dim) {
+void laya_timestep_embed(const float *t_dev, float *y_dev, int N, int dim) {
     if (!t_dev || !y_dev || N <= 0 || dim <= 0) {
         snprintf(laya_cuda_errbuf(), 512, "timestep_embed: bad args");
         return;
     }
-    hd_timestep_embed_kernel<<<(N * dim + 255) / 256, 256>>>(t_dev, y_dev, N, dim);
+    laya_timestep_embed_kernel<<<(N * dim + 255) / 256, 256>>>(t_dev, y_dev, N, dim);
 }

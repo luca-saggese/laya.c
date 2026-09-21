@@ -29,7 +29,7 @@ OBJS      := $(SRCS:.c=.o)
 
 BIN      := build/laya
 CUBIN    := build/obj/cuda
-CUDA_OBJS := $(CUBIN)/support.o $(CUBIN)/hd_gemm.o
+CUDA_OBJS := $(CUBIN)/support.o $(CUBIN)/hd_gemm.o $(CUBIN)/norm.o $(CUBIN)/act.o $(CUBIN)/residual.o $(CUBIN)/embed.o $(CUBIN)/attn.o $(CUBIN)/rope.o $(CUBIN)/laya_ops.o
 
 .PHONY: all laya-spark clean
 
