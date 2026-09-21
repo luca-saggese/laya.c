@@ -7,7 +7,7 @@
 CC      ?= gcc
 NVCC    ?= nvcc
 CFLAGS  ?= -O2 -g -std=c11 -Wall -Wextra
-CPPFLAGS += -Iinclude -Isrc/io -Isrc/laya -Isrc/cuda -Isrc/runtime
+CPPFLAGS += -Iinclude -Isrc/io -Isrc/laya -Isrc/cuda -Isrc/runtime -Isrc/tokenizer
 
 CUDA_HOME  ?= /usr/local/cuda
 CUDA_CPPFLAGS := -I$(CUDA_HOME)/include
@@ -23,7 +23,7 @@ CUDNN_LDFLAGS  := -L$(CUDNN_HOME)/lib -lcudnn
 
 TARGET_ARCH ?= sm_121
 
-CORE_SRCS := src/io/hd_json.c src/io/hd_gguf.c src/laya/model.c
+CORE_SRCS := src/io/hd_json.c src/io/hd_gguf.c src/laya/model.c src/tokenizer/laya_tokenizer.c
 SRCS      := src/main.c $(CORE_SRCS) src/runtime/laya_timing.c
 OBJS      := $(SRCS:.c=.o)
 
