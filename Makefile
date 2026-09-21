@@ -7,7 +7,7 @@
 CC      ?= gcc
 NVCC    ?= nvcc
 CFLAGS  ?= -O2 -g -std=c11 -Wall -Wextra
-CPPFLAGS += -Iinclude -Isrc/io -Isrc/laya -Isrc/cuda -Isrc/runtime -Isrc/tokenizer
+CPPFLAGS += -Iinclude -Isrc/io -Isrc/laya -Isrc/cuda -Isrc/runtime -Isrc/tokenizer -Isrc/server
 
 CUDA_HOME  ?= /usr/local/cuda
 CUDA_CPPFLAGS := -I$(CUDA_HOME)/include
@@ -28,12 +28,22 @@ SRCS      := src/main.c $(CORE_SRCS) src/runtime/laya_timing.c
 OBJS      := $(SRCS:.c=.o)
 
 BIN      := build/laya
+SERVER_BIN := build/laya-server
+SERVER_SRCS := src/server/laya_server.c $(CORE_SRCS) src/runtime/laya_timing.c
+SERVER_OBJS := $(SERVER_SRCS:.c=.o)
 CUBIN    := build/obj/cuda
 CUDA_OBJS := $(CUBIN)/support.o $(CUBIN)/hd_gemm.o $(CUBIN)/norm.o $(CUBIN)/act.o $(CUBIN)/residual.o $(CUBIN)/embed.o $(CUBIN)/attn.o $(CUBIN)/rope.o $(CUBIN)/laya_ops.o
 
-.PHONY: all laya-spark clean
+.PHONY: all laya-spark server clean
 
 all: $(BIN)
+
+# Resident TypeSafe System One (Jev-compatible) HTTP server.
+server: $(SERVER_BIN)
+
+$(SERVER_BIN): $(SERVER_OBJS) $(CUDA_OBJS)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -o $@ $(SERVER_OBJS) $(CUDA_OBJS) $(CUDA_LDFLAGS) $(CUBLAS_LDFLAGS) $(CUDNN_LDFLAGS) -lm -lstdc++ -lpthread
 
 # Primary target: NVIDIA DGX Spark / GB10 (CUDA sm_121).
 laya-spark: $(BIN)
@@ -55,4 +65,5 @@ clean:
 	find src tests -name '*.o' -delete
 
 -include $(SRCS:.c=.d)
+-include $(SERVER_SRCS:.c=.d)
 -include $(wildcard $(CUBIN)/*.d)
