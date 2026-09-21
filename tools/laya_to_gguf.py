@@ -193,6 +193,28 @@ def to_bf16_bytes(arr, dtype):
     raise SystemExit("unsupported dtype %r" % dtype)
 
 
+# The GGUF is a runtime-native format: it does not preserve the storage dtype
+# of the Hugging Face checkpoint. Every floating point model tensor is consumed
+# by a BF16 kernel (laya_gather_rows / laya_layernorm / laya_linear), so every
+# model tensor is stored BF16. F16 and F32 sources are normalized offline.
+# The only F32 values in the pack are calibration scalars, and those live in
+# GGUF metadata (laya.temperature, laya.temperature_by_options), never in the
+# tensor table.
+
+
+def tensor_ggml_type(native):
+    """GGML type for one native tensor name.
+
+    Always BF16: the native runtime has no FP32 kernel path. See the dtype
+    contract in models/laya-bf16.manifest.json.
+    """
+    return GGML_TYPE_BF16
+
+
+def tensor_payload(arr, dtype, ggml_type):
+    return to_bf16_bytes(arr, dtype)
+
+
 # ------------------------------------------------------------------ #
 # Laya-specific layout                                                #
 # ------------------------------------------------------------------ #
@@ -297,6 +319,30 @@ def build_manifest(tensors, cfg, agent_cfg):
     return entries, meta
 
 
+def _float_meta(name, cfg, *keys, default=None):
+    """Read one floating point config value and refuse silent coercion.
+
+    GGUF metadata is typed, and the runtime reads these keys as floats. A
+    value that reaches the writer as an int (or as a string that happens to
+    look numeric) would be serialized as an integer KV and reloaded as a
+    different number, so the type is validated here instead of at load time.
+    """
+    for k in keys:
+        if k in cfg and cfg[k] is not None:
+            value = cfg[k]
+            break
+    else:
+        value = default
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise SystemExit("metadata %s: expected a number, got %r" % (name, value))
+    value = float(value)
+    if not value > 0.0:
+        raise SystemExit("metadata %s: expected a positive value, got %r" % (name, value))
+    if value != value:
+        raise SystemExit("metadata %s: NaN" % name)
+    return value
+
+
 def write_gguf(output, entries, tensors, cfg, agent_cfg, meta, variant, source_name):
     w = Writer(output)
     w.u32(GGUF_MAGIC)
@@ -321,7 +367,7 @@ def write_gguf(output, entries, tensors, cfg, agent_cfg, meta, variant, source_n
         ("modernbert.intermediate_size", int(cfg["intermediate_size"])),
         ("modernbert.max_position_embeddings", int(cfg.get("max_position_embeddings", 8192))),
         ("modernbert.vocab_size", int(cfg["vocab_size"])),
-        ("modernbert.layer_norm_eps", float(cfg.get("norm_eps", cfg.get("layer_norm_eps", 1e-5)))),
+        ("modernbert.layer_norm_eps", _float_meta("modernbert.layer_norm_eps", cfg, "norm_eps", "layer_norm_eps", default=1e-5)),
         ("modernbert.local_attention", int(cfg.get("local_attention", 128))),
         ("modernbert.global_attn_every_n_layers", int(cfg.get("global_attn_every_n_layers", 3))),
         ("modernbert.global_rope_theta",
@@ -340,6 +386,12 @@ def write_gguf(output, entries, tensors, cfg, agent_cfg, meta, variant, source_n
             w.kv_uint32(key, ALIGNMENT)
         elif isinstance(value, str):
             w.kv_string(key, value)
+        elif isinstance(value, bool):
+            raise SystemExit("metadata %s: unexpected bool" % key)
+        elif isinstance(value, float):
+            # Floating semantic values (epsilons, rope thetas) must stay float;
+            # int() here silently turns 1e-5 into 0.
+            w.kv_f32(key, value)
         else:
             w.kv_uint32(key, int(value))
 
@@ -353,25 +405,26 @@ def write_gguf(output, entries, tensors, cfg, agent_cfg, meta, variant, source_n
     offset = 0
     for native, src in entries:
         arr, dtype = tensors[src]
-        nbytes = int(arr.size) * 2  # everything is BF16 in the pack
+        gtype = tensor_ggml_type(native)
+        nbytes = int(arr.size) * 2  # every model tensor is BF16 in the pack
         offset = align_up(offset, ALIGNMENT)
-        infos.append((native, src, arr, dtype, offset, nbytes))
+        infos.append((native, src, arr, dtype, gtype, offset, nbytes))
         offset += nbytes
     payload_bytes = align_up(offset, ALIGNMENT)
 
-    for native, src, arr, dtype, off, nbytes in infos:
+    for native, src, arr, dtype, gtype, off, nbytes in infos:
         w.string(native)
         w.u32(len(arr.shape))
         for d in arr.shape:
             w.u64(int(d))
-        w.u32(GGML_TYPE_BF16)
+        w.u32(gtype)
         w.u64(off)
 
     w.pad(ALIGNMENT)
 
     weight_bytes = 0
-    for native, src, arr, dtype, off, nbytes in infos:
-        w.write(to_bf16_bytes(arr, dtype))
+    for native, src, arr, dtype, gtype, off, nbytes in infos:
+        w.write(tensor_payload(arr, dtype, gtype))
         w.pad(ALIGNMENT)
         weight_bytes += nbytes
     w.close()
@@ -400,7 +453,29 @@ def skip_value(blob, pos, vtype):
     raise SystemExit("unknown metadata type %d" % vtype)
 
 
-def sanity_check(path, entries, tensors):
+def _read_kv_scalars(blob, n_kv):
+    """Reopens the KV block and returns {key: (gguf_type, value)} for scalars."""
+    out = {}
+    pos = 24
+    for _ in range(n_kv):
+        klen = struct.unpack_from("<Q", blob, pos)[0]
+        pos += 8
+        key = blob[pos:pos + klen].decode("utf-8")
+        pos += klen
+        vtype = struct.unpack_from("<I", blob, pos)[0]
+        pos += 4
+        if vtype == GGUF_TYPE_FLOAT32:
+            out[key] = (vtype, struct.unpack_from("<f", blob, pos)[0])
+        elif vtype == GGUF_TYPE_UINT32:
+            out[key] = (vtype, struct.unpack_from("<I", blob, pos)[0])
+        elif vtype == GGUF_TYPE_STRING:
+            n = struct.unpack_from("<Q", blob, pos)[0]
+            out[key] = (vtype, blob[pos + 8:pos + 8 + n].decode("utf-8"))
+        pos = skip_value(blob, pos, vtype)
+    return out
+
+
+def sanity_check(path, entries, tensors, cfg):
     """Reopen the GGUF and verify tensor count/names/shapes against the manifest."""
     with open(path, "rb") as f:
         blob = f.read()
@@ -432,7 +507,8 @@ def sanity_check(path, entries, tensors):
         ttype = struct.unpack_from("<I", blob, pos)[0]
         pos += 4
         pos += 8  # offset
-        assert ttype == GGML_TYPE_BF16, "%s: unexpected type %d" % (name, ttype)
+        want = tensor_ggml_type(name)
+        assert ttype == want, "%s: type %d, expected %d" % (name, ttype, want)
         found[name] = tuple(int(d) for d in dims)
 
     problems = []
@@ -444,6 +520,27 @@ def sanity_check(path, entries, tensors):
             problems.append("%s shape %s != %s" % (native, found[native], shape))
     if len(found) != len(entries):
         problems.append("duplicate/extra tensor names")
+
+    # Floating point metadata must survive the round trip bit-for-bit as F32.
+    scalars = _read_kv_scalars(blob, n_kv)
+    for key in ("modernbert.layer_norm_eps", "modernbert.global_rope_theta",
+                "modernbert.local_rope_theta"):
+        gtype, gvalue = scalars.get(key, (None, None))
+        if gtype != GGUF_TYPE_FLOAT32:
+            problems.append("%s: GGUF type %r, expected FLOAT32" % (key, gtype))
+            continue
+        src_key = key.split(".", 1)[1]
+        if key == "modernbert.layer_norm_eps":
+            hvalue = float(cfg.get("norm_eps", cfg.get("layer_norm_eps")))
+        else:
+            rp = cfg.get("rope_parameters", {}) or {}
+            which = "full_attention" if "global" in src_key else "sliding_attention"
+            hvalue = float((rp.get(which) or {}).get("rope_theta"))
+        if abs(float(gvalue) - hvalue) > 1e-12:
+            problems.append("%s: GGUF %r != HF %r" % (key, gvalue, hvalue))
+        else:
+            print("[sanity] %s = %.8g (HF %.8g)" % (key, gvalue, hvalue))
+
     if problems:
         raise SystemExit("GGUF sanity check failed: %s" % problems[:5])
     print("[sanity] %d tensors verified (names + shapes), %d metadata keys"
@@ -494,7 +591,7 @@ def main():
           % ", ".join("%s->bf16 x%d" % (k, v) for k, v in sorted(dtypes.items())))
 
     if not args.no_check:
-        sanity_check(args.output, entries, tensors)
+        sanity_check(args.output, entries, tensors, cfg)
 
 
 if __name__ == "__main__":

@@ -103,6 +103,8 @@ static void load_config(const laya_gguf_file *gf, laya_config *c) {
     c->n_act = (int)laya_gguf_kv_int(gf, "laya.n_act", 2);
     c->head_dim = c->n_heads ? c->hidden_size / c->n_heads : 0;
     c->sliding_window = c->local_attention / 2;
+    c->n_types = 3; /* DecisionModel: nn.Embedding(3, d) */
+    if (c->sliding_window <= 0) c->sliding_window = 64;
 
     const laya_gguf_kv *t = laya_gguf_find_kv(gf, "laya.temperature");
     if (t && t->vals) {
@@ -137,7 +139,11 @@ static const laya_gguf_tensor *find_tensor(const laya_gguf_file *gf, const char 
 }
 
 /* Resolves a tensor to a resident device pointer. Every required tensor is
- * checked, so a missing name fails the load instead of crashing later. */
+ * checked, so a missing name fails the load instead of crashing later.
+ *
+ * The runtime dtype contract is BF16-only: no kernel in the Laya path reads
+ * F32 or F16 model data. Binding must never reinterpret bytes, so anything
+ * else aborts the load. See models/laya-bf16.manifest.json. */
 static laya_status bind_tensor(const laya_gguf_file *gf, const void *arena,
                                const char *name, laya_tensor *out) {
     const laya_gguf_tensor *t = find_tensor(gf, name);
@@ -145,12 +151,18 @@ static laya_status bind_tensor(const laya_gguf_file *gf, const void *arena,
         set_err("missing tensor %s", name);
         return LAYA_ERR_MISSING;
     }
-    if (t->type != LAYA_GGML_TYPE_BF16 && t->type != LAYA_GGML_TYPE_F32) {
-        set_err("tensor %s: unsupported type %u", name, t->type);
-        return LAYA_ERR_UNSUPPORTED;
+    if (t->type != LAYA_GGML_TYPE_BF16) {
+        set_err("tensor %s: expected BF16, got %s", name,
+                laya_ggml_type_name(t->type));
+        return LAYA_ERR_MISMATCH;
     }
     out->ptr = (uint8_t *)arena + t->offset;
     out->nbytes = (int64_t)t->nbytes;
+    /* GGUF stores dims fastest-first; reverse them into torch [out, in] order. */
+    int r = (int)t->n_dims;
+    if (r > 4) r = 4;
+    out->rank = r;
+    for (int i = 0; i < r; i++) out->shape[i] = (int64_t)t->dims[r - 1 - i];
     snprintf(out->name, sizeof(out->name), "%s", name);
     return LAYA_OK;
 }
@@ -445,6 +457,7 @@ void laya_model_report(const laya_model *m) {
            c->local_attention, c->sliding_window, c->global_attn_every_n_layers);
     printf("rope theta:       global=%.1f local=%.1f\n",
            (double)c->global_rope_theta, (double)c->local_rope_theta);
+    printf("layer_norm_eps:   %.8g\n", (double)c->layer_norm_eps);
     printf("special ids:      cls=%d sep=%d mask=%d pad=%d\n",
            c->cls_token_id, c->sep_token_id, c->mask_token_id, c->pad_token_id);
     printf("decision head:    %d layers, n_act=%d, max_len=%d, head_max_len=%d\n",
